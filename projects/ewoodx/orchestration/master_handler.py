@@ -1,6 +1,7 @@
 """eWoodX master-side orchestration request handling."""
 
 from typing import Any, Dict
+import json
 
 from framework.workspace import (
     DomainManager,
@@ -269,6 +270,50 @@ class EWoodXMasterHandler:
             "entry": parts[1],
         }
 
+    def _serialize_entity(
+        self,
+        entity_manager: EntityManager,
+        entity,
+    ) -> Dict[str, Any]:
+
+        location = self._entity_location(
+            entity_manager,
+            entity,
+        )
+
+        with entity.manifest.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(
+                file
+            )
+
+        return {
+            "entity_id": data.get(
+                "entity_id",
+                entity.entity_id,
+            ),
+            "entity_type": data.get(
+                "entity_type"
+            ),
+            "domain": location["domain"],
+            "entry": location["entry"],
+            "created_at": data.get(
+                "created_at"
+            ),
+            "availability_status": data.get(
+                "availability_status"
+            ),
+            "claimed_by": data.get(
+                "claimed_by"
+            ),
+            "metadata": data.get(
+                "metadata",
+                {},
+            ),
+        }
+
     def _list_indexed_entries(
         self,
         request: Dict[str, Any],
@@ -452,17 +497,10 @@ class EWoodXMasterHandler:
                     continue
 
                 results.append(
-                    {
-                        "entity_id": (
-                            entity.entity_id
-                        ),
-                        "domain": (
-                            location["domain"]
-                        ),
-                        "entry": (
-                            location["entry"]
-                        ),
-                    }
+                    self._serialize_entity(
+                        entity_manager,
+                        entity,
+                    )
                 )
 
             return {
