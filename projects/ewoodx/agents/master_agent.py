@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import threading
 
 
 PROJECT_ROOT = Path(
@@ -18,6 +19,7 @@ from framework.communication.storage import (
 
 from framework.communication.transport import (
     TCPServer,
+    TCPFileServer,
 )
 
 from framework.communication.workflow import (
@@ -31,7 +33,12 @@ from framework.orchestration import (
 from projects.ewoodx.config import (
     AGENTS_RUNTIME_ROOT,
     MASTER_BIND_HOST,
+    MASTER_FILE_PORT,
     MASTER_PORT,
+)
+
+from projects.ewoodx.orchestration.entity_file_resolver import (
+    EWoodXEntityFileResolver,
 )
 
 from projects.ewoodx.orchestration.master_handler import (
@@ -90,6 +97,22 @@ def run_master_agent(
     )
 
     # ---------------------------------------------------------
+    # Master file-transfer server
+    # ---------------------------------------------------------
+
+    entity_file_resolver = (
+        EWoodXEntityFileResolver()
+    )
+
+    file_server = TCPFileServer(
+        download_resolver=(
+            entity_file_resolver.resolve_download
+        ),
+        host=MASTER_BIND_HOST,
+        port=MASTER_FILE_PORT,
+    )
+
+    # ---------------------------------------------------------
     # Start
     # ---------------------------------------------------------
 
@@ -108,7 +131,19 @@ def run_master_agent(
         f"{MASTER_BIND_HOST}:{MASTER_PORT}"
     )
 
+    print(
+        "[eWoodX] Master file API: "
+        f"{MASTER_BIND_HOST}:{MASTER_FILE_PORT}"
+    )
+
+    file_server_thread = threading.Thread(
+        target=file_server.start,
+        daemon=True,
+    )
+
     try:
+
+        file_server_thread.start()
 
         server.start()
 
@@ -119,6 +154,7 @@ def run_master_agent(
             "[eWoodX] Stopping master"
         )
 
+        file_server.stop()
         server.stop()
 
 

@@ -22,6 +22,7 @@ AGENTS_RUNTIME_ROOT = (
 MASTER_BIND_HOST = "0.0.0.0"
 MASTER_HOST = "127.0.0.1"
 MASTER_PORT = 5105
+MASTER_FILE_PORT = 5106
 
 
 # ---------------------------------------------------------------------
