@@ -1,44 +1,56 @@
 # Workspace Framework
 
-The `framework.workspace` package provides persistent organization and discovery of operational data.
+The `framework.workspace` package provides persistent organization of operational data and optional indexed management of identifiable entities.
 
-It defines a hierarchical storage model:
+At its core, the package defines the organizational hierarchy:
 
 ```text
 Workspace
-    │
-    ├── Domain
-    │     │
-    │     ├── Entry
-    │     │     │
-    │     │     ├── Entity
-    │     │     ├── Entity
-    │     │     └── ...
-    │     │
-    │     └── Entry
     │
     └── Domain
+          │
+          └── Entry
 ```
 
-The hierarchy separates four different levels of context:
+An application may optionally extend an entry with framework-managed entities:
 
 ```text
 Workspace
-    └── overall persistent working context
-
-Domain
-    └── functional area
-
-Entry
-    └── persistent context/history within a domain
-
-Entity
-    └── individually identifiable physical or digital object
+    │
+    └── Domain
+          │
+          └── Entry
+                │
+                ├── Entity
+                ├── Entity
+                └── ...
 ```
 
-The package also provides a workspace-level SQLite index for discovering and querying entities without scanning every entity directory.
+The distinction is important:
 
-The public API is:
+```text
+Workspace → Domain → Entry
+    │
+    └── core persistent organizational hierarchy
+
+EntityManager
+    │
+    └── optional persistent entity/index layer
+```
+
+A project does **not** need to use `EntityManager` or SQLite in order to use the workspace framework.
+
+This allows the same workspace structure to support different application architectures, including:
+
+```text
+runtime / application-driven data resolution
+
+and
+
+persistent indexed entity discovery
+```
+
+The package-level public API is:
 
 ```python
 from framework.workspace import (
@@ -61,7 +73,7 @@ from framework.workspace import (
 
 The workspace framework provides a consistent persistent structure for applications that generate, transform, and consume data across multiple operational domains.
 
-A typical structure may look like:
+The fundamental structure is:
 
 ```text
 project/
@@ -71,16 +83,11 @@ project/
 │       │
 │       ├── workspace.json
 │       │
-│       ├── index/
-│       │   └── entities.db
-│       │
 │       ├── sensing/
 │       │   ├── domain.json
 │       │   └── entry_001/
 │       │       ├── entry.json
-│       │       └── entity_001/
-│       │           ├── entity.json
-│       │           └── ...
+│       │       └── application-defined data
 │       │
 │       ├── design/
 │       │   └── ...
@@ -91,21 +98,57 @@ project/
 └── .last_workspace
 ```
 
-The exact domain names, entry naming conventions, entity types, entity metadata, and artifact files are defined by the application.
+What exists below an entry depends on the application.
 
-The framework manages the hierarchy and persistence mechanics without assigning application-specific meaning to them.
+For example, an application may maintain runtime-oriented files and manifests:
+
+```text
+entry_001/
+├── entry.json
+├── processing_state.json
+├── outputs/
+├── results/
+└── application-defined manifests
+```
+
+Another application may use persistent framework-managed entities:
+
+```text
+entry_001/
+├── entry.json
+├── entity_001/
+│   ├── entity.json
+│   └── application-defined files
+└── entity_002/
+    ├── entity.json
+    └── application-defined files
+```
+
+When `EntityManager` is used, the workspace additionally contains:
+
+```text
+index/
+└── entities.db
+```
+
+The exact domain names, entry naming conventions, runtime data structures, entity types, entity metadata, and artifact files are defined by the application.
+
+The framework manages persistent organizational boundaries without assigning application-specific meaning to them.
 
 ---
 
 # Responsibility
 
-The workspace package provides:
+The core workspace layer provides:
 
 - project workspace creation and loading;
 - project-defined workspace directory layouts;
 - persistent workspace manifests;
 - functional domain creation and discovery;
-- persistent entry creation and discovery;
+- persistent entry creation and discovery.
+
+The optional entity-management layer additionally provides:
+
 - persistent entity creation;
 - canonical entity manifests;
 - workspace-wide entity registration;
@@ -113,14 +156,18 @@ The workspace package provides:
 - entity querying;
 - entity availability and claiming state.
 
-It does **not**:
+The workspace package does **not**:
 
+- require applications to use entities;
+- require applications to use SQLite;
+- define application-specific runtime query semantics;
+- define application-specific runtime-state formats;
 - define application-specific domain names;
 - define entry naming conventions;
 - define entity types;
 - define application-specific metadata schemas;
 - determine which artifact files belong to an entity;
-- transfer entity files across a network;
+- transfer files across a network;
 - define distributed actions or agents;
 - orchestrate operational workflows.
 
@@ -140,7 +187,7 @@ workspace/
 └── entity_manager.py
 ```
 
-The main dependency chain is:
+The core dependency chain is:
 
 ```text
 DirectoryManager
@@ -159,11 +206,17 @@ EntryManager
       │
       ▼
 EntryPaths
-      │
-      ▼
+```
+
+The optional entity layer extends that hierarchy:
+
+```text
+EntryPaths
+    │
+    ▼
 EntityManager
-      │
-      ▼
+    │
+    ▼
 EntityPaths
 ```
 
@@ -245,11 +298,15 @@ An application may use entries to represent:
 
 The framework does not prescribe the naming or semantics.
 
+An entry is the lowest required organizational level provided by the core workspace hierarchy.
+
+Applications may organize their own files, manifests, runtime state, or other persistent data below it without using the entity layer.
+
 ---
 
 ## Entity
 
-An entity is an individually identifiable persistent object associated with an entry.
+An entity is an **optional** individually identifiable persistent object associated with an entry.
 
 ```text
 Workspace
@@ -263,9 +320,9 @@ Workspace
                 └── Entity C
 ```
 
-An entity may represent a physical or digital object.
+Entities are used when an application requires persistent object identity and workspace-wide discovery.
 
-Each entity has:
+Each framework-managed entity has:
 
 ```text
 entity directory
@@ -274,41 +331,229 @@ entity directory
       └── application-defined files
 ```
 
-The framework manages the entity identity and manifest.
+The framework manages entity identity, canonical entity metadata, indexing, and availability state.
 
 The application may place additional artifacts inside the entity directory.
 
+Applications that do not require persistent indexed objects do not need to use entities.
+
 ---
 
-# Persistence Model
+# Data-Access Models
 
-The workspace framework uses two complementary persistence mechanisms.
+The workspace framework intentionally does not require every application to discover operational data in the same way.
 
-## Filesystem and manifests
+Two important usage patterns are supported by the architecture.
 
-Workspace hierarchy and canonical entity information are stored in directories and JSON manifests:
+## Runtime / Application-Driven Resolution
+
+Some applications determine relevant data dynamically while the system is running.
+
+In this model:
+
+```text
+Workspace
+    ↓
+Domain
+    ↓
+Entry
+    ↓
+runtime state / manifests / files
+    ↓
+application-specific logic
+    ↓
+requested data
+```
+
+The application may determine relevant data from:
+
+- the active workspace;
+- the current domain or entry;
+- runtime state;
+- application-specific manifests;
+- generated output records;
+- filesystem contents;
+- another application-defined store.
+
+For example:
+
+```text
+workspace/
+└── processing/
+    ├── domain.json
+    └── run_001/
+        ├── entry.json
+        ├── processing_state.json
+        └── outputs/
+```
+
+An application-specific handler may inspect the current state or output manifest to determine which result satisfies a request.
+
+In this model, the workspace framework provides the persistent organizational context.
+
+The actual runtime query or resolution logic belongs to the application.
+
+No `EntityManager` or SQLite entity index is required.
+
+---
+
+## Persistent Indexed Entity Discovery
+
+Other applications need persistent discovery of individually identifiable objects based on their properties.
+
+In this model:
+
+```text
+Workspace
+    ↓
+Domain
+    ↓
+Entry
+    ↓
+Entity
+    │
+    ├── entity.json
+    └── artifacts
+
+          +
+
+workspace/index/entities.db
+          │
+          ▼
+EntityManager.query_entities()
+```
+
+`EntityManager` provides:
+
+- persistent entity identity;
+- canonical entity manifests;
+- workspace-wide registration;
+- indexed metadata;
+- property-based queries;
+- availability state;
+- claiming.
+
+This model is useful when later operations need questions such as:
+
+```text
+Which available entities satisfy these properties?
+
+Where is entity X stored?
+
+Which entities of this type exist?
+
+Which entity is currently claimed?
+```
+
+---
+
+## Combining the Models
+
+The two approaches are not separate workspace frameworks.
+
+They are different ways applications can use the same persistent organizational foundation:
+
+```text
+                         WORKSPACE
+                             │
+                           DOMAIN
+                             │
+                           ENTRY
+                             │
+              ┌──────────────┴──────────────┐
+              │                             │
+              ▼                             ▼
+     runtime/application              EntityManager
+         data model                       model
+              │                             │
+              ▼                             ▼
+    runtime resolution              indexed discovery
+    manifests / state               entity.json
+    application stores              entities.db
+```
+
+An application may use only the runtime-oriented model.
+
+An application may use only the indexed-entity model.
+
+An application may also combine them when different parts of the workflow require different persistence or discovery semantics.
+
+The framework therefore does **not** require:
+
+```text
+Workspace → Domain → Entry → Entity
+```
+
+for every application.
+
+The core organizational hierarchy ends at:
+
+```text
+Workspace → Domain → Entry
+```
+
+`Entity` is an optional managed layer.
+
+---
+
+# Persistence Models
+
+The workspace package does not impose one universal persistence mechanism for all application data.
+
+## Core Filesystem Persistence
+
+The core hierarchy uses directories and JSON manifests:
 
 ```text
 workspace.json
 domain.json
 entry.json
-entity.json
-```
-
-## SQLite entity index
-
-Entity discovery and querying use:
-
-```text
-<workspace>/index/entities.db
 ```
 
 Conceptually:
 
 ```text
+FILESYSTEM / MANIFESTS
+        │
+        ▼
+Workspace
+        │
+        ▼
+Domain
+        │
+        ▼
+Entry
+        │
+        ▼
+application-defined data
+```
+
+This is sufficient for applications whose operational data are resolved by their own application logic.
+
+No SQLite database is required by the core hierarchy.
+
+---
+
+## Optional Entity Persistence
+
+When `EntityManager` is used, it adds canonical entity manifests:
+
+```text
+entity.json
+```
+
+and a workspace-level SQLite database:
+
+```text
+<workspace>/index/entities.db
+```
+
+The two representations serve different purposes:
+
+```text
 FILESYSTEM / JSON                     SQLITE
 
-canonical hierarchy                   discovery index
+canonical hierarchy                   entity discovery index
 canonical entity metadata             searchable columns
 entity artifact location              relative entity path
        │                                   │
@@ -319,7 +564,88 @@ entity artifact location              relative entity path
 
 The SQLite database does not replace `entity.json`.
 
-It provides indexed discovery of persistent entities.
+It is an indexed discovery mechanism associated specifically with the `EntityManager` model.
+
+---
+
+# Choosing a Data Model
+
+A useful conceptual boundary is:
+
+```text
+Does the application require persistent,
+property-based discovery of individually
+identified objects?
+              │
+        ┌─────┴─────┐
+        │           │
+       NO          YES
+        │           │
+        ▼           ▼
+Workspace /       Workspace /
+Domain / Entry    Domain / Entry
+        │           │
+        ▼           ▼
+application       EntityManager
+runtime logic       +
+                  entities.db
+```
+
+Use the core workspace hierarchy when data are naturally resolved from the current operational context.
+
+Use `EntityManager` when objects require durable identity, indexed discovery, availability, or claiming.
+
+The choice belongs to the application.
+
+---
+
+# Runtime Queries vs Entity Queries
+
+The term **query** can refer to two different operations.
+
+## Runtime Query
+
+```text
+request
+   ↓
+application logic
+   ↓
+current workspace / entry / runtime state
+   ↓
+application-defined result
+```
+
+The workspace framework does not prescribe how this query is evaluated.
+
+Application logic may inspect:
+
+```text
+JSON manifests
+runtime state
+output records
+filesystem contents
+application-specific stores
+```
+
+The workspace package therefore supports the persistent context in which runtime querying can operate, but it does not currently provide a generic runtime-query manager.
+
+---
+
+## Entity Query
+
+```text
+filters
+   ↓
+EntityManager.query_entities()
+   ↓
+workspace/index/entities.db
+   ↓
+registered EntityPaths
+```
+
+This is a specific framework capability with a defined indexed query model.
+
+Keeping these concepts separate prevents application-specific runtime semantics from being forced into the generic entity database.
 
 ---
 
@@ -365,7 +691,7 @@ Paths in the layout must be relative and may not escape the workspace through `.
 
 ---
 
-## Public attributes
+## Public Attributes
 
 ```python
 manager.root
@@ -435,7 +761,7 @@ class WorkspacePaths
 
 `WorkspacePaths` represents the paths belonging to one loaded or initialized workspace.
 
-## Public attributes
+## Public Attributes
 
 ```python
 workspace.root
@@ -635,7 +961,7 @@ class DomainPaths
 
 Represents one managed workspace domain.
 
-## Public attributes
+## Public Attributes
 
 ```python
 domain.root
@@ -681,7 +1007,7 @@ domain_manager = DomainManager(
 
 ---
 
-## Public attributes
+## Public Attributes
 
 ```python
 domain_manager.workspace
@@ -804,7 +1130,7 @@ class EntryPaths
 
 Represents one managed entry.
 
-## Public attributes
+## Public Attributes
 
 ```python
 entry.root
@@ -850,7 +1176,7 @@ entry_manager = EntryManager(
 
 ---
 
-## Public attributes
+## Public Attributes
 
 ```python
 entry_manager.domain
@@ -943,6 +1269,14 @@ Only directories containing `entry.json` are returned.
 
 ---
 
+# Optional Entity Layer
+
+The remainder of this README describes the optional indexed-entity model.
+
+Applications that use only `Workspace → Domain → Entry` do not need to instantiate `EntityManager` or create `EntityPaths`.
+
+---
+
 # EntityPaths
 
 ```python
@@ -952,7 +1286,7 @@ class EntityPaths
 
 Represents one registered persistent entity.
 
-## Public attributes
+## Public Attributes
 
 ```python
 entity.root
@@ -1032,7 +1366,7 @@ Construction initializes or evolves:
 
 ---
 
-## Public attributes
+## Public Attributes
 
 ```python
 entity_manager.workspace
@@ -1056,7 +1390,7 @@ These represent:
 
 # Entity Index
 
-Every entity is registered in the workspace-level SQLite table:
+Every entity managed by `EntityManager` is registered in the workspace-level SQLite table:
 
 ```text
 entities
@@ -1438,7 +1772,7 @@ Example:
 ```python
 entity_manager.claim_entity(
     entity_id="material_001",
-    claimed_by="design_agent_01",
+    claimed_by="consumer_01",
 )
 ```
 
@@ -1454,7 +1788,7 @@ claimed
 and:
 
 ```text
-claimed_by = "design_agent_01"
+claimed_by = "consumer_01"
 ```
 
 The SQLite update only succeeds if the entity is currently available.
@@ -1891,7 +2225,80 @@ If a declared column already exists with an incompatible SQLite type, constructi
 
 ---
 
-# Complete Example
+# Example: Runtime-Oriented Workspace
+
+A project that does not require indexed entities can stop at the entry level.
+
+Create a workspace:
+
+```python
+from framework.workspace import (
+    init_workspace,
+    DomainManager,
+    EntryManager,
+)
+
+workspace = init_workspace(
+    project_root="/path/to/project",
+    workspace_name="session_001",
+    layout={},
+)
+```
+
+Create a domain and entry:
+
+```python
+domain_manager = DomainManager(
+    workspace=workspace,
+)
+
+processing = domain_manager.ensure_domain(
+    "processing"
+)
+
+entry_manager = EntryManager(
+    domain=processing,
+)
+
+entry = entry_manager.ensure_entry(
+    "run_001"
+)
+```
+
+Application code can then use the entry as its persistent context:
+
+```python
+state_path = (
+    entry.root
+    / "processing_state.json"
+)
+
+output_directory = (
+    entry.root
+    / "outputs"
+)
+```
+
+The resulting structure may be:
+
+```text
+workspace/
+├── workspace.json
+└── processing/
+    ├── domain.json
+    └── run_001/
+        ├── entry.json
+        ├── processing_state.json
+        └── outputs/
+```
+
+Any runtime query against those files or manifests is implemented by application logic.
+
+No entity database is required.
+
+---
+
+# Example: Indexed Entity Workspace
 
 Create a workspace:
 
@@ -2033,12 +2440,23 @@ entity_manager.claim_entity(
 
 The workspace framework and communication framework solve different problems.
 
-Workspace answers:
+Workspace answers questions such as:
 
 ```text
-Where is persistent operational data?
-What entities exist?
-What properties are indexed?
+What persistent workspace is active?
+
+What domains and entries exist?
+
+Where should operational data be stored?
+```
+
+When the optional entity layer is used, it additionally answers:
+
+```text
+What registered entities exist?
+
+What indexed properties do they have?
+
 Which entities are available?
 ```
 
@@ -2046,8 +2464,11 @@ Communication answers:
 
 ```text
 What distributed action exists?
+
 Which agent claims it?
+
 Has execution started?
+
 Has execution finished?
 ```
 
@@ -2056,13 +2477,17 @@ Conceptually:
 ```text
 COMMUNICATION
      │
-     │ coordinates operations
+     │ coordinates distributed operations
      ▼
 APPLICATION
      │
-     │ reads/writes persistent data
+     │ interprets project semantics
      ▼
 WORKSPACE
+     │
+     ├── runtime/application data
+     │
+     └── optional indexed entities
 ```
 
 Neither framework requires the other to define its internal model.
@@ -2077,7 +2502,7 @@ For distributed communication details, see:
 
 Orchestration determines which work becomes available next.
 
-Workspace manages the persistent operational context and entities involved in that work.
+Workspace provides the persistent context used by the application performing that work.
 
 ```text
 ORCHESTRATION
@@ -2089,10 +2514,14 @@ distributed Action
 application operation
       │
       ▼
-WORKSPACE / ENTITIES
+WORKSPACE
+      │
+      ├── runtime/application data
+      │
+      └── optional entities
 ```
 
-The generic orchestration framework does not directly manipulate workspace entities.
+The generic orchestration framework does not directly manipulate workspace entities or application runtime data.
 
 For orchestration details, see:
 
@@ -2119,18 +2548,20 @@ from framework.workspace import (
 )
 ```
 
-| Object | Purpose |
-|---|---|
-| `DirectoryManager` | Manage a project-defined directory layout. |
-| `WorkspacePaths` | Represent paths belonging to one workspace. |
-| `init_workspace` | Create or initialize a persistent workspace. |
-| `load_workspace` | Load an existing workspace. |
-| `DomainManager` | Create, load, and discover workspace domains. |
-| `DomainPaths` | Represent paths belonging to one domain. |
-| `EntryManager` | Create, load, and discover entries within a domain. |
-| `EntryPaths` | Represent paths belonging to one entry. |
-| `EntityManager` | Create, register, discover, query, and manage entity availability. |
-| `EntityPaths` | Represent paths belonging to one persistent entity. |
+The API can be understood in two layers:
+
+| Layer | Object | Purpose |
+|---|---|---|
+| Core | `DirectoryManager` | Manage a project-defined directory layout. |
+| Core | `WorkspacePaths` | Represent paths belonging to one workspace. |
+| Core | `init_workspace` | Create or initialize a persistent workspace. |
+| Core | `load_workspace` | Load an existing workspace. |
+| Core | `DomainManager` | Create, load, and discover workspace domains. |
+| Core | `DomainPaths` | Represent paths belonging to one domain. |
+| Core | `EntryManager` | Create, load, and discover entries within a domain. |
+| Core | `EntryPaths` | Represent paths belonging to one entry. |
+| Optional entity layer | `EntityManager` | Create, register, discover, query, and manage persistent entities. |
+| Optional entity layer | `EntityPaths` | Represent paths belonging to one persistent entity. |
 
 Private validation, manifest-writing, SQLite initialization, and state-synchronization helpers are implementation details and are not part of the public API.
 
@@ -2138,7 +2569,7 @@ Private validation, manifest-writing, SQLite initialization, and state-synchroni
 
 # Summary
 
-The workspace framework establishes the persistent hierarchy:
+The core workspace framework establishes:
 
 ```text
 Workspace
@@ -2146,11 +2577,46 @@ Workspace
 Domain
     ↓
 Entry
-    ↓
-Entity
 ```
 
-while entity discovery operates at workspace scope:
+This is the generic persistent organizational hierarchy.
+
+From that common foundation, an application can choose how its operational data are represented and discovered:
+
+```text
+                         ENTRY
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+              ▼                         ▼
+       runtime-oriented            entity-oriented
+        application                 application
+              │                         │
+              ▼                         ▼
+     application-specific          EntityManager
+     manifests / state /               │
+     files / stores                entity.json
+                                        +
+                                  entities.db
+```
+
+The separation is therefore:
+
+```text
+Workspace / Domain / Entry
+    │
+    └── generic persistent organization
+
+runtime/application data
+    │
+    └── application-defined resolution
+
+EntityManager
+    │
+    └── optional persistent indexed-object model
+```
+
+For entity-oriented applications, discovery operates at workspace scope:
 
 ```text
 Entity directories
@@ -2164,20 +2630,16 @@ workspace/index/entities.db
 EntityManager.query_entities()
 ```
 
-The resulting separation is:
+For runtime-oriented applications:
 
 ```text
-filesystem + manifests
-        │
-        └── persistent canonical organization
-
-SQLite index
-        │
-        └── efficient discovery and filtering
-
-application
-        │
-        └── domain semantics and entity artifacts
+Workspace / Domain / Entry
+       │
+       ▼
+application manifests / state / files
+       │
+       ▼
+application-specific runtime resolution
 ```
 
-This allows persistent operational data to remain structured and locally understandable while still supporting efficient workspace-wide entity discovery.
+This allows the same workspace framework to support both runtime-driven workflows and database-indexed entity workflows without forcing either data model onto the other.
