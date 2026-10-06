@@ -6,10 +6,10 @@ Operations are where reusable framework capabilities, project configuration, phy
 
 The package currently includes operations for:
 
-- camera calibration;
+- project-specific Entry and entity ID allocation;
+- camera calibration and equipment tuning;
 - Timber sensing and measurement;
 - persistent Timber entity creation;
-- project-specific entity ID allocation;
 - projector calibration;
 - live projection and external geometry streaming.
 
@@ -25,12 +25,14 @@ The current operations are organized as:
 projects/ewoodx/operations/
 ├── __init__.py
 │
+├── entry_allocator.py
 ├── entity_id_allocator.py
 │
 ├── calibrate_arducam_intrinsic.py
 ├── calibrate_arducam_extrinsic.py
 ├── calibrate_angetube_intrinsic.py
 ├── calibrate_angetube_extrinsic.py
+├── tune_angetube_camera.py
 │
 ├── timber_segmentation_arducam.py
 ├── timber_segmentation_angetube.py
@@ -46,14 +48,16 @@ These modules can be grouped conceptually as:
 ```text
 OPERATIONS
     │
-    ├── Entity Identity
+    ├── Project Identity / Allocation
+    │      ├── entry_allocator.py
     │      └── entity_id_allocator.py
     │
-    ├── Camera Calibration
+    ├── Camera Calibration / Setup
     │      ├── calibrate_arducam_intrinsic.py
     │      ├── calibrate_arducam_extrinsic.py
     │      ├── calibrate_angetube_intrinsic.py
-    │      └── calibrate_angetube_extrinsic.py
+    │      ├── calibrate_angetube_extrinsic.py
+    │      └── tune_angetube_camera.py
     │
     ├── Timber Sensing
     │      ├── timber_segmentation_arducam.py
@@ -169,14 +173,74 @@ The current package contains four main operational groups:
 
 | Group | Responsibility |
 |---|---|
-| Entity identity | Allocate persistent project-specific entity IDs. |
-| Camera calibration | Produce camera intrinsic and planar calibration data for the current physical setup. |
+| Project identity / allocation | Apply project-specific conventions for Entry allocation and persistent entity IDs. |
+| Camera calibration / setup | Produce camera calibration data and support equipment-specific camera setup and tuning. |
 | Timber sensing | Acquire, segment, measure, visualize, and persist sensed Timber. |
 | Projection | Calibrate the projector and render geometry onto the physical workspace. |
 
 These groups do not represent a fixed final architecture.
 
 Additional operations are expected as the project develops.
+
+---
+
+# Project Identity and Allocation
+
+The operations package currently contains two project-specific allocation mechanisms:
+
+```text
+EWoodXEntryAllocator
+        │
+        └── project Entry naming/allocation
+
+EWoodXEntityIdAllocator
+        │
+        └── persistent entity ID allocation
+```
+
+The generic workspace framework owns the underlying Entry and Entity persistence mechanisms.
+
+The eWoodX operations layer owns the project-specific conventions used to allocate their identities.
+
+---
+
+# Entry Allocation
+
+Defined in:
+
+```text
+entry_allocator.py
+```
+
+Primary class:
+
+```python
+EWoodXEntryAllocator
+```
+
+The allocator provides the project-specific convention used when creating and identifying new eWoodX Entries.
+
+It operates together with the generic:
+
+```python
+framework.workspace.EntryManager
+```
+
+Conceptually:
+
+```text
+EntryManager
+    │
+    └── generic Entry persistence and management
+
+EWoodXEntryAllocator
+    │
+    └── eWoodX-specific Entry allocation convention
+```
+
+The current sensing entrypoint uses this allocator when creating new sensing Entries and when resolving the latest project-managed Entry.
+
+This keeps project naming/allocation behavior outside the generic workspace framework.
 
 ---
 
@@ -365,6 +429,8 @@ ArUco arrangement
 physical coordinates
 interactive workflow
 ```
+
+The Angetube camera additionally has a project-level tuning utility for configuring acquisition behavior during equipment setup.
 
 ---
 
@@ -690,6 +756,51 @@ planar homography
    ▼
 calibration artifact
 ```
+
+---
+
+# Angetube Camera Tuning
+
+Defined in:
+
+```text
+tune_angetube_camera.py
+```
+
+This operation provides an equipment-specific utility for interactively tuning the current Angetube webcam configuration.
+
+Its purpose is different from camera calibration:
+
+```text
+CAMERA CALIBRATION
+       │
+       └── determines the geometric camera model
+
+CAMERA TUNING
+       │
+       └── adjusts camera/device parameters for acquisition
+```
+
+The tuning operation therefore belongs to the project operational layer because it supports preparation of the specific camera used by the current eWoodX sensing setup.
+
+It should not be interpreted as part of the generic camera calibration mathematics provided by `framework.sensing`.
+
+Conceptually:
+
+```text
+Angetube Camera
+       │
+       ▼
+Camera Tuning
+       │
+       ▼
+configured acquisition behavior
+       │
+       ▼
+Calibration / Sensing Operations
+```
+
+The utility supports development and physical setup of the current Angetube sensing workflow.
 
 ---
 
@@ -1648,7 +1759,7 @@ Different operations use different subsets.
 For example:
 
 ```text
-Camera Calibration
+Camera Calibration / Setup
       │
       ├── config
       └── framework.sensing
@@ -1695,7 +1806,15 @@ ENTRYPOINT
             └── perform actual task
 ```
 
-For example, the sensing entrypoint can select an equipment-specific Timber sensing operation without moving Timber segmentation logic into the entrypoint itself.
+For example, the sensing entrypoint uses:
+
+```text
+EWoodXEntryAllocator
+```
+
+while resolving the project Entry and then selects an equipment-specific Timber sensing operation.
+
+This keeps Entry context preparation separate from the Timber sensing implementation itself.
 
 ---
 
@@ -1774,6 +1893,26 @@ Workspace
 persistent Timber entity
 ```
 
+Project-specific allocation can sit around the generic workspace mechanisms:
+
+```text
+EntryManager
+     │
+     ▼
+EWoodXEntryAllocator
+     │
+     ▼
+project Entry
+
+EntityManager
+     │
+     ▼
+EWoodXEntityIdAllocator
+     │
+     ▼
+project Entity ID
+```
+
 However, operations are not required to use `EntityManager`.
 
 For example, calibration operations primarily produce calibration artifacts rather than application entities.
@@ -1804,6 +1943,8 @@ Sensing Agent
         ▼
 Sensing Entrypoint
         │
+        ├── EWoodXEntryAllocator
+        │
         ▼
 eWoodX Timber Sensing Operation
         │
@@ -1832,10 +1973,12 @@ This illustrates why the operation layer is important: it is the point where gen
 | ArUco image detection | `framework.sensing` |
 | Physical eWoodX marker arrangement | `projects.ewoodx.config` |
 | Interactive calibration workflow | `projects.ewoodx.operations` |
+| Angetube equipment tuning | `projects.ewoodx.operations` |
 | Timber segmentation | `projects.ewoodx.operations` |
 | Timber measurement | `projects.ewoodx.operations` |
+| Project Entry allocation convention | `projects.ewoodx.operations` |
 | Timber ID convention | `projects.ewoodx.operations` + project config |
-| Generic entity persistence | `framework.workspace` |
+| Generic Entry and entity persistence | `framework.workspace` |
 | Timber indexed metadata schema | `projects.ewoodx.config` |
 | Timber artifact creation | `projects.ewoodx.operations` |
 | Projector calibration workflow | `projects.ewoodx.operations` |
@@ -1917,10 +2060,11 @@ When adding or modifying an eWoodX operation:
 4. Keep distributed action lifecycle outside the operation.
 5. Keep workflow progression outside the operation.
 6. Use the workspace framework for persistent project data when appropriate.
-7. Preserve clear equipment-specific behavior where hardware requirements differ.
-8. Avoid premature base classes or manager abstractions.
-9. Document temporary compatibility mechanisms explicitly.
-10. Generalize behavior only after repeated implementation demonstrates a stable reusable boundary.
+7. Keep project-specific identity/allocation conventions outside the generic workspace framework.
+8. Preserve clear equipment-specific behavior where hardware requirements differ.
+9. Avoid premature base classes or manager abstractions.
+10. Document temporary compatibility mechanisms explicitly.
+11. Generalize behavior only after repeated implementation demonstrates a stable reusable boundary.
 
 ---
 
@@ -1978,9 +2122,9 @@ Its current operational areas are:
 ```text
 OPERATIONS
     │
-    ├── Entity ID Allocation
+    ├── Project Identity / Allocation
     │
-    ├── Camera Calibration
+    ├── Camera Calibration / Setup
     │
     ├── Timber Sensing
     │
