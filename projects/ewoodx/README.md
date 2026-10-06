@@ -54,11 +54,11 @@ The main responsibilities are:
 
 | Package / Module | Responsibility |
 |---|---|
-| `config/` | Project-specific configuration for workspace organization, sensing, entities, communication, and projection. |
-| `operations/` | Concrete eWoodX operations including calibration, Timber sensing, entity identity/allocation, and projection. |
-| `orchestration/` | eWoodX workflow definitions, project request routing, entity queries, and semantic file resolution. |
-| `agents/` | Long-running Master and Sensing Agent runtime composition. |
-| `entrypoints/` | Application-level execution paths, including direct and distributed sensing. |
+| [`config/`](config/README.md) | Project-specific configuration for workspace organization, sensing, entities, communication, and projection. |
+| [`operations/`](operations/README.md) | Concrete eWoodX operations including calibration, Timber sensing, entity identity/allocation, and projection. |
+| [`orchestration/`](orchestration/README.md) | eWoodX workflow definitions, project request routing, entity queries, and semantic file resolution. |
+| [`agents/`](agents/README.md) | Long-running Master and Sensing Agent runtime composition. |
+| [`entrypoints/`](entrypoints/README.md) | Application-level execution paths, including direct and distributed sensing. |
 | `calibration_data/` | Persistent project-level camera and projector calibration data. |
 | `setup.py` | Initializes persistent project calibration directories. |
 
@@ -432,7 +432,7 @@ Conceptually:
                   Timber Entity
 ```
 
-Camera-specific details are documented in the configuration and operations READMEs.
+Camera-specific details are documented in the [Configuration README](config/README.md) and [Operations README](operations/README.md).
 
 ---
 
@@ -557,11 +557,7 @@ Conceptually:
                    sensing operation
 ```
 
-For detailed runtime documentation, see:
-
-```text
-projects/ewoodx/agents/README.md
-```
+For detailed runtime documentation, see the [Agents README](agents/README.md).
 
 ---
 
@@ -904,17 +900,7 @@ Projection Calibration
 Physical Workspace
 ```
 
-The projection implementation is documented in:
-
-```text
-projects/ewoodx/operations/README.md
-```
-
-and its configuration in:
-
-```text
-projects/ewoodx/config/README.md
-```
+The projection implementation is documented in the [Operations README](operations/README.md) and its configuration in the [Configuration README](config/README.md).
 
 ---
 
@@ -1267,40 +1253,11 @@ These later stages should be integrated incrementally rather than being assumed 
 
 # Package Documentation
 
-Detailed documentation is organized from the project root into the individual packages.
+Detailed developer documentation is available for each major project package:
 
-```text
-projects/ewoodx/
-│
-├── README.md
-│
-├── config/
-│   └── README.md
-│
-├── operations/
-│   └── README.md
-│
-├── orchestration/
-│   └── README.md
-│
-├── agents/
-│   └── README.md
-│
-└── entrypoints/
-    └── README.md
-```
+### [Configuration](config/README.md)
 
-Use the package-specific READMEs for implementation details.
-
-### Configuration
-
-See:
-
-```text
-projects/ewoodx/config/README.md
-```
-
-for:
+Project-specific configuration for:
 
 ```text
 workspace configuration
@@ -1310,15 +1267,9 @@ communication configuration
 projection configuration
 ```
 
-### Operations
+### [Operations](operations/README.md)
 
-See:
-
-```text
-projects/ewoodx/operations/README.md
-```
-
-for:
+Concrete project operations for:
 
 ```text
 entity and entry allocation
@@ -1330,15 +1281,9 @@ projector calibration
 live projection
 ```
 
-### Orchestration
+### [Orchestration](orchestration/README.md)
 
-See:
-
-```text
-projects/ewoodx/orchestration/README.md
-```
-
-for:
+Project workflow and request handling for:
 
 ```text
 workflow definitions
@@ -1348,15 +1293,9 @@ entity queries
 entity-file resolution
 ```
 
-### Agents
+### [Agents](agents/README.md)
 
-See:
-
-```text
-projects/ewoodx/agents/README.md
-```
-
-for:
+Distributed runtime composition for:
 
 ```text
 Master Agent
@@ -1366,15 +1305,9 @@ distributed persistence
 network services
 ```
 
-### Entrypoints
+### [Entrypoints](entrypoints/README.md)
 
-See:
-
-```text
-projects/ewoodx/entrypoints/README.md
-```
-
-for:
+Application execution paths for:
 
 ```text
 direct sensing
@@ -1394,11 +1327,11 @@ The current project responsibilities can be summarized as:
 
 | Layer | Responsibility |
 |---|---|
-| `config` | What project-specific values should be used? |
-| `operations` | How is a concrete project task performed? |
-| `orchestration` | What project work should exist and how are project requests routed? |
-| `agents` | Which long-running distributed services are deployed and how are they composed? |
-| `entrypoints` | How does a user/application start a concrete process? |
+| [`config`](config/README.md) | What project-specific values should be used? |
+| [`operations`](operations/README.md) | How is a concrete project task performed? |
+| [`orchestration`](orchestration/README.md) | What project work should exist and how are project requests routed? |
+| [`agents`](agents/README.md) | Which long-running distributed services are deployed and how are they composed? |
+| [`entrypoints`](entrypoints/README.md) | How does a user/application start a concrete process? |
 | `framework` | Which reusable mechanisms make these layers possible? |
 
 A useful shorthand is:
