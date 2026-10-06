@@ -24,6 +24,16 @@ The framework is **under continuous development**.
 
 It should not be interpreted as a finished or fixed software architecture. The current structure represents the capabilities that have been implemented, tested, and generalized so far. New capabilities, equipment integrations, execution patterns, and framework areas are expected to be added as development continues.
 
+## Framework Architecture
+
+The diagram below provides an overview of the current framework architecture and its relationship with the application/project layer and physical or external systems.
+
+![Framework Architecture](./framework_architecture.png)
+
+The framework is organized around a central orchestration and communication cycle, supported by reusable operational capabilities and persistent data organization. The application/project layer composes these capabilities into domain-specific workflows, while physical and external systems provide the execution environment, equipment, and feedback.
+
+The architecture represents the **current development state** of the framework and is expected to evolve as additional capabilities and integrations are developed.
+
 The current implemented framework is centered around four areas:
 
 ```text

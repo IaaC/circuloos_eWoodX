@@ -29,3 +29,4 @@ venv/
 .last_workspace
 
 !**/calibration_data/**
+!**/framework/framework_architecture.png
