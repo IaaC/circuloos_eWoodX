@@ -68,57 +68,31 @@ Each major package contains its own README with detailed developer documentation
 
 # Architecture
 
-The project is organized around a separation between:
+The eWoodX application layer composes project-specific configuration, operations, orchestration, agents, and entrypoints around the reusable capabilities provided by the framework.
+
+The overall relationship between the eWoodX project layer, the reusable framework, and the physical or external systems is illustrated below.
+
+![eWoodX Project Architecture](ewoodx_architecture.png)
+
+The architecture is organized into three principal layers:
 
 ```text
-PROJECT-SPECIFIC APPLICATION LOGIC
-                │
-                ▼
-         projects.ewoodx
-                │
-                ▼
-       REUSABLE FRAMEWORK
-                │
-                ▼
-            framework
-                │
-                ▼
-     PHYSICAL / DIGITAL SYSTEMS
+Project eWoodX
+    │
+    └── project-specific behavior and workflow composition
+            │
+            ▼
+Framework
+    │
+    └── generic reusable capabilities
+            │
+            ▼
+Physical / External Systems
+    │
+    └── sensors, computers, robots, interfaces,
+        and external platforms
 ```
 
-The generic framework provides reusable mechanisms.
-
-The eWoodX project determines how those mechanisms are configured and combined for the reclaimed-timber workflow.
-
-Conceptually:
-
-```text
-                       eWoodX
-                         │
-        ┌────────────────┼────────────────┐
-        │                │                │
-        ▼                ▼                ▼
-   Configuration     Operations      Entrypoints
-        │                │                │
-        └────────────┬───┴───────┬────────┘
-                     │           │
-                     ▼           ▼
-              Orchestration    Agents
-                     │           │
-                     └─────┬─────┘
-                           ▼
-                       Framework
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-          Workspace   Communication   Sensing
-                           │
-                           ▼
-                     Orchestration
-```
-
-The exact dependencies are not strictly hierarchical in every case, but the responsibility boundaries remain important.
 
 ---
 

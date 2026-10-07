@@ -30,3 +30,4 @@ venv/
 
 !**/calibration_data/**
 !**/framework/framework_architecture.png
+!**/projects/ewoodx/ewoodx_architecture.png
