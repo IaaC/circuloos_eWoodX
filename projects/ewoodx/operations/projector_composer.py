@@ -10,27 +10,33 @@ Coordinates:
 - ProjectorControls
 - ProjectorStreamService
 
-Sources:
-1. Local timber measurement JSON
-2. Live sensing measurement stream
-3. Complete Grasshopper geometry stream
+Data sources:
+- Local timber measurement JSON
+- Live sensing measurement stream
+- Complete Grasshopper geometry stream
 
-Grasshopper geometry takes priority while active.
-The latest sensing measurement is stored independently.
+Operation:
+- Loads the latest local timber measurement at startup.
+- Automatically attempts to connect to the streaming host.
+- Falls back to local JSON monitoring if streaming is unavailable.
+- Uses live sensing measurements when received.
+- Displays Grasshopper geometry with priority while active.
+- Retains the latest sensing measurement independently.
+- Restores sensing projection when Grasshopper becomes inactive.
 
-The legacy projector_live_viewer.py is not imported.
+Configuration:
+- Runtime settings are defined at the beginning of this file.
+- Streaming is enabled automatically.
+- Grasshopper inactivity timeout is optional.
+- No command-line arguments are required.
 
-Run from repository root:
+Execution:
+- Run directly from VS Code.
+- Or execute as a module from the repository root:
 
     python -m projects.ewoodx.operations.projector_composer
 
-Options:
-    --no-stream
-    --windowed
-    --gh-timeout 5
-    --file-poll 0.5
-    --homography PATH
-    --frame-delay 16
+The legacy projector_live_viewer.py remains independent.
 """
 
 from __future__ import annotations
