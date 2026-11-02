@@ -1,0 +1,335 @@
+"""
+eWoodX - Projector Geometry
+
+Geometry preparation and coordinate transformations for
+the eWoodX projector.
+
+Responsibilities:
+- Prepare sensing measurements for projection.
+- Accept complete Grasshopper geometry payloads.
+- Convert world coordinates (mm) into projector pixels.
+- Apply projector position and timber thickness compensation.
+- Convert RGB/hex colors into OpenCV BGR colors.
+
+Does not handle:
+- TCP communication
+- File monitoring
+- Projection state
+- OpenCV window management
+- Rendering
+"""
+
+from __future__ import annotations
+
+import copy
+
+import cv2
+import numpy as np
+
+
+class ProjectorGeometry:
+
+    def __init__(
+        self,
+        homography: np.ndarray,
+        projector_height_mm: float,
+        projector_pos_x_mm: float,
+        projector_pos_y_mm: float,
+    ) -> None:
+
+        self.homography = np.asarray(
+            homography,
+            dtype=np.float32,
+        )
+
+        if self.homography.shape != (3, 3):
+            raise ValueError(
+                "Homography must be a 3x3 matrix."
+            )
+
+        self.projector_height_mm = float(
+            projector_height_mm
+        )
+
+        self.projector_pos_x_mm = float(
+            projector_pos_x_mm
+        )
+
+        self.projector_pos_y_mm = float(
+            projector_pos_y_mm
+        )
+
+    # -------------------------------------------------------------
+    # Sensing measurement preparation
+    # -------------------------------------------------------------
+
+    @staticmethod
+    def prepare_measurement(
+        measurement: dict,
+    ) -> dict:
+        """
+        Prepare sensing measurement data for projection.
+
+        Preserves the original measurement fields.
+
+        The existing projector renderer understands:
+        - contour_mm
+        - corners_mm
+        - defects
+        - length_mm
+        - width_mm
+        - thickness_mm
+        - cut_geo
+        - mill_geo
+        - points_geo
+        - labels
+
+        No geometry is generated or altered here.
+        """
+
+        if not isinstance(measurement, dict):
+            raise TypeError(
+                "Measurement must be a dictionary."
+            )
+
+        data = copy.deepcopy(measurement)
+
+        if data.get("thickness_mm") is None:
+
+            thickness = data.get(
+                "timber_thickness_mm"
+            )
+
+            if thickness is not None:
+                data["thickness_mm"] = thickness
+
+        # Add only missing optional geometry collections.
+        # Do not overwrite existing geometry.
+
+        data.setdefault("cut_geo", [])
+        data.setdefault("mill_geo", [])
+        data.setdefault("points_geo", [])
+        data.setdefault("labels", [])
+
+        return data
+
+    # -------------------------------------------------------------
+    # Grasshopper geometry preparation
+    # -------------------------------------------------------------
+
+    @staticmethod
+    def prepare_gh_geometry(
+        geometry: dict,
+    ) -> dict:
+        """
+        Prepare a complete Grasshopper geometry payload.
+
+        GH already reads the timber measurement and adds its
+        design geometry.
+
+        Therefore, the received payload is not merged with
+        the current sensing measurement.
+        """
+
+        if not isinstance(geometry, dict):
+            raise TypeError(
+                "Grasshopper geometry must be a dictionary."
+            )
+
+        return copy.deepcopy(geometry)
+
+    # -------------------------------------------------------------
+    # World coordinates -> projector pixels
+    # -------------------------------------------------------------
+
+    def world_to_projector(
+        self,
+        points_mm,
+        off_x: float = 0.0,
+        off_y: float = 0.0,
+        thickness_mm: float = 0.0,
+    ) -> np.ndarray:
+        """
+        Transform world XY coordinates in millimeters into
+        calibrated projector pixel coordinates.
+
+        Preserves the transformation order of the existing
+        projector_live_viewer.py:
+
+        1. Apply XY offsets.
+        2. Apply timber thickness/parallax compensation.
+        3. Apply calibrated homography.
+        """
+
+        if points_mm is None or len(points_mm) == 0:
+
+            return np.empty(
+                (0, 2),
+                dtype=np.float32,
+            )
+
+        points = np.asarray(
+            points_mm,
+            dtype=np.float32,
+        ).copy()
+
+        if points.ndim == 1 and len(points) == 2:
+
+            points = points.reshape(
+                1, 2
+            )
+
+        # ---------------------------------------------------------
+        # XY offsets
+        # ---------------------------------------------------------
+
+        points[:, 0] += off_x
+        points[:, 1] += off_y
+
+        # ---------------------------------------------------------
+        # Parallax compensation
+        # ---------------------------------------------------------
+
+        if (
+            thickness_mm > 0.0
+            and self.projector_height_mm > thickness_mm
+        ):
+
+            scale_factor = (
+                self.projector_height_mm
+                / (
+                    self.projector_height_mm
+                    - thickness_mm
+                )
+            )
+
+            points[:, 0] = (
+                self.projector_pos_x_mm
+                + (
+                    points[:, 0]
+                    - self.projector_pos_x_mm
+                )
+                * scale_factor
+            )
+
+            points[:, 1] = (
+                self.projector_pos_y_mm
+                + (
+                    points[:, 1]
+                    - self.projector_pos_y_mm
+                )
+                * scale_factor
+            )
+
+        # ---------------------------------------------------------
+        # Homography transformation
+        # ---------------------------------------------------------
+
+        projected = cv2.perspectiveTransform(
+            points.reshape(-1, 1, 2),
+            self.homography,
+        )
+
+        return projected.reshape(-1, 2)
+
+    # -------------------------------------------------------------
+    # Color conversion
+    # -------------------------------------------------------------
+
+    @staticmethod
+    def parse_color(
+        color_val,
+        default_bgr=(255, 255, 255),
+    ):
+        """
+        Convert supported color representations to OpenCV BGR.
+
+        Supported:
+        - Hex string: "#FF0000"
+        - RGB list/tuple: [255, 0, 0]
+        - RGB dictionary: {"R": 255, "G": 0, "B": 0}
+
+        Preserves the existing viewer's color conversion.
+        """
+
+        if color_val is None:
+            return default_bgr
+
+        try:
+
+            if isinstance(color_val, str):
+
+                color_string = (
+                    color_val.strip().lstrip("#")
+                )
+
+                if len(color_string) in (6, 8):
+
+                    red = int(
+                        color_string[0:2], 16
+                    )
+
+                    green = int(
+                        color_string[2:4], 16
+                    )
+
+                    blue = int(
+                        color_string[4:6], 16
+                    )
+
+                    return (
+                        blue,
+                        green,
+                        red,
+                    )
+
+            elif isinstance(
+                color_val,
+                (list, tuple),
+            ):
+
+                if len(color_val) >= 3:
+
+                    red = int(color_val[0])
+                    green = int(color_val[1])
+                    blue = int(color_val[2])
+
+                    return (
+                        blue,
+                        green,
+                        red,
+                    )
+
+            elif isinstance(color_val, dict):
+
+                red = int(
+                    color_val.get(
+                        "R",
+                        color_val.get("r", 255),
+                    )
+                )
+
+                green = int(
+                    color_val.get(
+                        "G",
+                        color_val.get("g", 255),
+                    )
+                )
+
+                blue = int(
+                    color_val.get(
+                        "B",
+                        color_val.get("b", 255),
+                    )
+                )
+
+                return (
+                    blue,
+                    green,
+                    red,
+                )
+
+        except Exception:
+            pass
+
+        return default_bgr
