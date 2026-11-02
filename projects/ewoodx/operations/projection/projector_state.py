@@ -1,49 +1,59 @@
 """
 eWoodX - Projector State
 
-Thread-safe state management for continuous projector operation.
+Thread-safe state management for the eWoodX projector.
 
 Maintains two independent geometry sources:
 
 1. Sensing measurements
-   - Continuously updated by the sensing stream or runtime JSON.
-   - Available for projection without Grasshopper.
+   - Loaded initially from local runtime JSON.
+   - Updated by local JSON monitoring or live sensing stream.
+   - Available without Grasshopper.
 
 2. Grasshopper geometry
-   - Complete geometry payload containing timber geometry
-     and additional design layers.
+   - Complete geometry payload, including timber and design.
    - Takes priority while Grasshopper is active.
+   - Never merged with sensing geometry.
 
-The active projection uses the latest complete Grasshopper
-payload when Grasshopper is active, otherwise the latest
-sensing measurement.
+Also manages:
+- Latest local measurement selection.
+- Runtime measurement JSON monitoring.
+- Sensing stream priority over local JSON.
+- Timber thickness.
+- Grasshopper connection state and optional timeout.
 
-This module does not perform:
-- TCP communication
-- JSON file monitoring
-- Geometry transformation
+Does not handle:
+- TCP communication or stream subscriptions
+- Homography transformations
 - OpenCV rendering
+- Keyboard or remote commands
 """
 
 from __future__ import annotations
 
 import copy
+import json
+import math
 import threading
 import time
+
+from pathlib import Path
 
 
 class ProjectorState:
     """
     Thread-safe storage for projector geometry and parameters.
 
-    Compatible with the existing projector viewer snapshot
-    interface while supporting independent sensing and GH data.
+    Existing state interfaces remain compatible with the
+    projector renderer, controls, and streaming composer.
     """
 
     def __init__(
         self,
         initial_data: dict,
         initial_thickness_mm: float = 0.0,
+        runtime_root: str | Path | None = None,
+        file_poll_interval: float = 0.5,
     ) -> None:
 
         if not isinstance(initial_data, dict):
@@ -57,10 +67,43 @@ class ProjectorState:
         # Sensing measurement state
         # ---------------------------------------------------------
 
-        self.measurement_data = copy.deepcopy(initial_data)
+        self.measurement_data = copy.deepcopy(
+            initial_data
+        )
 
         self.measurement_revision = 0
         self.measurement_last_received_time = 0.0
+
+        # Once a live sensing measurement arrives,
+        # local JSON no longer replaces it.
+
+        self.live_measurement_received = False
+
+        # ---------------------------------------------------------
+        # Local runtime measurement monitoring
+        # ---------------------------------------------------------
+
+        self.runtime_root = (
+            Path(runtime_root)
+            if runtime_root is not None
+            else None
+        )
+
+        self.file_poll_interval = float(
+            file_poll_interval
+        )
+
+        if (
+            not math.isfinite(self.file_poll_interval)
+            or self.file_poll_interval <= 0.0
+        ):
+            raise ValueError(
+                "file_poll_interval must be finite "
+                "and positive."
+            )
+
+        self.last_file_check = 0.0
+        self.last_file_signature = None
 
         # ---------------------------------------------------------
         # Grasshopper geometry state
@@ -82,39 +125,396 @@ class ProjectorState:
             float(initial_thickness_mm),
         )
 
-        self._update_thickness(initial_data)
+        self._update_thickness(
+            initial_data
+        )
+
+    # -------------------------------------------------------------
+    # Default sensing measurement
+    # -------------------------------------------------------------
+
+    @staticmethod
+    def empty_measurement() -> dict:
+        """
+        Default projector geometry when no measurement exists.
+
+        Preserves the original viewer's empty-state schema.
+        """
+
+        return {
+            "source": "None",
+            "timber_id": 1,
+            "length_mm": 0.0,
+            "width_mm": 0.0,
+            "thickness_mm": 0.0,
+            "contour_mm": [],
+            "corners_mm": [],
+            "defects": [],
+            "cut_geo": [],
+            "mill_geo": [],
+            "points_geo": [],
+            "labels": [],
+        }
+
+    # -------------------------------------------------------------
+    # Local measurement file helpers
+    # -------------------------------------------------------------
+
+    @staticmethod
+    def _measurement_files(
+        runtime_root: Path,
+    ) -> list[Path]:
+        """
+        Find local projector measurement files.
+
+        Uses the existing eWoodX filename convention.
+        """
+
+        return list(
+            runtime_root.glob(
+                "timber_*_measurement.json"
+            )
+        )
+
+    @classmethod
+    def _latest_measurement_file(
+        cls,
+        runtime_root: Path,
+    ) -> Path | None:
+        """
+        Select the most recently modified measurement file.
+        """
+
+        files = cls._measurement_files(
+            runtime_root
+        )
+
+        if not files:
+            return None
+
+        return max(
+            files,
+            key=lambda path: path.stat().st_mtime_ns,
+        )
+
+    @staticmethod
+    def _file_signature(
+        path: Path,
+    ) -> tuple:
+        """
+        Identify a measurement file version by
+        its path, modification time, and size.
+        """
+
+        stat = path.stat()
+
+        return (
+            str(path.resolve()),
+            stat.st_mtime_ns,
+            stat.st_size,
+        )
+
+    @staticmethod
+    def _read_measurement_file(
+        path: Path,
+        default_thickness_mm: float = 0.0,
+    ) -> dict:
+        """
+        Read a local sensing measurement JSON.
+
+        Preserves the data mapping used by the
+        existing projector composer.
+
+        Design geometry is empty for sensing-only data.
+        """
+
+        with path.open(
+            "r",
+            encoding="utf-8",
+        ) as handle:
+
+            data = json.load(handle)
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Measurement JSON must contain "
+                "a dictionary."
+            )
+
+        thickness = data.get(
+            "thickness_mm"
+        )
+
+        if thickness is None:
+            thickness = data.get(
+                "timber_thickness_mm",
+                default_thickness_mm,
+            )
+
+        if thickness is None:
+            thickness = default_thickness_mm
+
+        return {
+            "source": path.name,
+            "timber_id": data.get(
+                "timber_id",
+                1,
+            ),
+            "length_mm": data.get(
+                "length_mm",
+                0.0,
+            ),
+            "width_mm": data.get(
+                "width_mm",
+                0.0,
+            ),
+            "thickness_mm": thickness,
+            "contour_mm": data.get(
+                "contour_mm",
+                [],
+            ),
+            "corners_mm": data.get(
+                "corners_mm",
+                [],
+            ),
+            "defects": data.get(
+                "defects",
+                [],
+            ),
+            "cut_geo": [],
+            "mill_geo": [],
+            "points_geo": [],
+            "labels": [],
+        }
+
+    # -------------------------------------------------------------
+    # Runtime-based initialization
+    # -------------------------------------------------------------
+
+    @classmethod
+    def from_runtime(
+        cls,
+        runtime_root: str | Path,
+        initial_thickness_mm: float = 0.0,
+        file_poll_interval: float = 0.5,
+    ) -> ProjectorState:
+        """
+        Initialize ProjectorState from the latest local
+        timber measurement JSON.
+
+        If no valid measurement exists, use empty geometry.
+
+        This replaces the composer's previous
+        _load_initial_measurement() implementation.
+        """
+
+        runtime_root = Path(
+            runtime_root
+        )
+
+        initial_data = cls.empty_measurement()
+        initial_signature = None
+
+        try:
+
+            path = cls._latest_measurement_file(
+                runtime_root
+            )
+
+            if path is None:
+
+                print(
+                    "[Projector] No local timber "
+                    "measurement found."
+                )
+
+            else:
+
+                initial_data = (
+                    cls._read_measurement_file(
+                        path,
+                        default_thickness_mm=(
+                            initial_thickness_mm
+                        ),
+                    )
+                )
+
+                initial_signature = (
+                    cls._file_signature(
+                        path
+                    )
+                )
+
+                print(
+                    "[Projector] Initial measurement:"
+                )
+
+                print(
+                    f"  {path.name}"
+                )
+
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+        ) as error:
+
+            print(
+                "[Projector] Initial measurement "
+                f"load failed: {error}"
+            )
+
+        state = cls(
+            initial_data=initial_data,
+            initial_thickness_mm=initial_thickness_mm,
+            runtime_root=runtime_root,
+            file_poll_interval=file_poll_interval,
+        )
+
+        state.last_file_signature = (
+            initial_signature
+        )
+
+        return state
+
+    # -------------------------------------------------------------
+    # Continuous local measurement monitoring
+    # -------------------------------------------------------------
+
+    def poll_measurement_file(self) -> bool:
+        """
+        Check the runtime directory for a new or modified
+        timber measurement JSON.
+
+        Returns True if a measurement was updated.
+
+        Once a valid live sensing measurement is received,
+        local JSON monitoring stops replacing sensing data.
+
+        This method is intended to be called periodically
+        by the projector composer.
+        """
+
+        with self.lock:
+
+            if self.live_measurement_received:
+                return False
+
+            if self.runtime_root is None:
+                return False
+
+            now = time.monotonic()
+
+            if (
+                now - self.last_file_check
+                < self.file_poll_interval
+            ):
+                return False
+
+            self.last_file_check = now
+
+            try:
+
+                path = self._latest_measurement_file(
+                    self.runtime_root
+                )
+
+                if path is None:
+                    return False
+
+                signature = self._file_signature(
+                    path
+                )
+
+                if signature == self.last_file_signature:
+                    return False
+
+                data = self._read_measurement_file(
+                    path,
+                    default_thickness_mm=(
+                        self.thickness_mm
+                    ),
+                )
+
+                # Update through the existing state interface.
+                # GH priority remains unchanged.
+
+                self.update_measurement(
+                    data
+                )
+
+                self.last_file_signature = signature
+
+                print(
+                    "[Projector] Local measurement updated:"
+                    f" {path.name}"
+                )
+
+                return True
+
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+            ) as error:
+
+                print(
+                    "[Projector] Local measurement "
+                    f"update failed: {error}"
+                )
+
+                return False
 
     # -------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------
 
-    def _update_thickness(self, data: dict) -> None:
+    def _update_thickness(
+        self,
+        data: dict,
+    ) -> None:
         """
-        Update thickness when the payload contains a valid value.
+        Update thickness from the active data source.
 
-        The existing viewer uses 'thickness_mm'.
-        Sensing measurements may use 'timber_thickness_mm'.
+        Supports:
+        - thickness_mm
+        - timber_thickness_mm
+
+        Must be called while holding the state lock,
+        except during initialization.
         """
 
-        value = data.get("thickness_mm")
+        value = data.get(
+            "thickness_mm"
+        )
 
         if value is None:
-            value = data.get("timber_thickness_mm")
+            value = data.get(
+                "timber_thickness_mm"
+            )
 
         if value is None:
             return
 
         try:
             value = float(value)
-        except (TypeError, ValueError, OverflowError):
+
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
             return
 
-        if value >= 0.0:
+        if (
+            math.isfinite(value)
+            and value >= 0.0
+        ):
             self.thickness_mm = value
 
     def _gh_active(self) -> bool:
         """
-        Return whether a complete GH payload is active.
+        Return whether Grasshopper geometry is active.
 
         Must be called while holding self.lock.
         """
@@ -131,22 +531,32 @@ class ProjectorState:
     def update_measurement(
         self,
         measurement: dict,
+        from_stream: bool = False,
     ) -> None:
         """
         Replace the latest sensing measurement.
 
-        A sensing update does not overwrite stored GH geometry.
+        A sensing update does not overwrite active GH geometry.
 
-        When GH is inactive, the new sensing measurement becomes
-        the active projection geometry.
+        Set from_stream=True when receiving a measurement
+        from the live eWoodX sensing stream.
+
+        After the first live sensing measurement,
+        local JSON no longer replaces it.
         """
 
-        if not isinstance(measurement, dict):
+        if not isinstance(
+            measurement,
+            dict,
+        ):
             raise TypeError(
                 "measurement must be a dictionary."
             )
 
         with self.lock:
+
+            if from_stream:
+                self.live_measurement_received = True
 
             self.measurement_data = copy.deepcopy(
                 measurement
@@ -159,7 +569,9 @@ class ProjectorState:
             )
 
             if not self._gh_active():
-                self._update_thickness(measurement)
+                self._update_thickness(
+                    measurement
+                )
 
     # -------------------------------------------------------------
     # Grasshopper geometry updates
@@ -173,11 +585,14 @@ class ProjectorState:
         """
         Replace the latest complete GH geometry payload.
 
-        GH geometry is treated as a complete representation,
-        not as an independent overlay to be merged with sensing.
+        GH geometry is a complete representation,
+        not an overlay merged with sensing data.
         """
 
-        if not isinstance(geometry, dict):
+        if not isinstance(
+            geometry,
+            dict,
+        ):
             raise TypeError(
                 "geometry must be a dictionary."
             )
@@ -196,7 +611,9 @@ class ProjectorState:
 
             self.is_connected = True
 
-            self._update_thickness(geometry)
+            self._update_thickness(
+                geometry
+            )
 
     def update_from_json(
         self,
@@ -204,10 +621,8 @@ class ProjectorState:
         client_addr=None,
     ) -> None:
         """
-        Compatibility method for the existing viewer.
-
-        The original TCP server calls update_from_json()
-        whenever it receives a complete GH payload.
+        Compatibility method for the original
+        projector viewer state interface.
         """
 
         self.update_gh_geometry(
@@ -216,16 +631,16 @@ class ProjectorState:
         )
 
     # -------------------------------------------------------------
-    # Connection state
+    # Grasshopper connection state
     # -------------------------------------------------------------
 
     def set_disconnected(self) -> None:
         """
         Mark Grasshopper as disconnected.
 
-        The latest sensing measurement becomes active again.
-        Stored GH geometry is retained for diagnostics or
-        subsequent updates, but is no longer rendered.
+        The latest sensing measurement becomes active.
+
+        Stored GH geometry remains available for diagnostics.
         """
 
         with self.lock:
@@ -241,16 +656,17 @@ class ProjectorState:
         connected: bool,
     ) -> None:
         """
-        Explicitly update Grasshopper connection state.
-
-        Connection management belongs to the composer.
+        Explicitly update Grasshopper connection status.
         """
 
         with self.lock:
 
-            self.is_connected = bool(connected)
+            self.is_connected = bool(
+                connected
+            )
 
             if not self.is_connected:
+
                 self._update_thickness(
                     self.measurement_data
                 )
@@ -260,20 +676,25 @@ class ProjectorState:
         timeout_seconds: float,
     ) -> bool:
         """
-        Optional freshness check.
+        Optional Grasshopper freshness check.
 
-        Returns True if GH was active but its last geometry
-        update exceeded the configured timeout.
+        Returns True when GH was active but its last
+        geometry update exceeded the timeout.
 
-        This is not automatically invoked. The composer can
-        decide whether stale data should cause a fallback.
+        The timeout is not automatic.
         """
 
-        timeout_seconds = float(timeout_seconds)
+        timeout_seconds = float(
+            timeout_seconds
+        )
 
-        if timeout_seconds <= 0.0:
+        if (
+            not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0.0
+        ):
             raise ValueError(
-                "timeout_seconds must be positive."
+                "timeout_seconds must be finite "
+                "and positive."
             )
 
         with self.lock:
@@ -300,7 +721,7 @@ class ProjectorState:
             return False
 
     # -------------------------------------------------------------
-    # Projection parameters
+    # Projection thickness
     # -------------------------------------------------------------
 
     def set_thickness(
@@ -308,16 +729,22 @@ class ProjectorState:
         thickness_mm: float,
     ) -> None:
         """
-        Set the current projector thickness manually.
+        Set projector thickness manually.
 
-        Preserves the existing viewer control interface.
+        Preserves the existing keyboard control interface.
         """
 
-        value = float(thickness_mm)
+        value = float(
+            thickness_mm
+        )
 
-        if not 0.0 <= value < float("inf"):
+        if (
+            not math.isfinite(value)
+            or value < 0.0
+        ):
             raise ValueError(
-                "thickness_mm must be finite and non-negative."
+                "thickness_mm must be finite "
+                "and non-negative."
             )
 
         with self.lock:
@@ -342,19 +769,15 @@ class ProjectorState:
 
     def get_snapshot(self):
         """
-        Return the existing five-element viewer snapshot.
+        Return the existing five-element renderer snapshot.
 
-        Returns:
-            (
-                active_geometry,
-                gh_connected,
-                gh_packet_count,
-                gh_last_received_time,
-                thickness_mm,
-            )
-
-        This maintains compatibility with the current
-        projector rendering loop.
+        (
+            active_geometry,
+            gh_connected,
+            gh_packet_count,
+            gh_last_received_time,
+            thickness_mm,
+        )
         """
 
         with self.lock:
@@ -379,7 +802,9 @@ class ProjectorState:
     # Individual source snapshots
     # -------------------------------------------------------------
 
-    def get_measurement_snapshot(self) -> dict:
+    def get_measurement_snapshot(
+        self,
+    ) -> dict:
         """
         Return a copy of the latest sensing measurement.
         """
@@ -390,9 +815,11 @@ class ProjectorState:
                 self.measurement_data
             )
 
-    def get_gh_snapshot(self) -> dict | None:
+    def get_gh_snapshot(
+        self,
+    ) -> dict | None:
         """
-        Return a copy of the latest GH geometry, if available.
+        Return a copy of the latest GH geometry.
         """
 
         with self.lock:
@@ -407,7 +834,7 @@ class ProjectorState:
 
     def get_status(self) -> dict:
         """
-        Return a thread-safe status snapshot.
+        Return a thread-safe projector state snapshot.
         """
 
         with self.lock:
@@ -429,6 +856,17 @@ class ProjectorState:
                 ),
                 "measurement_last_received_time": (
                     self.measurement_last_received_time
+                ),
+                "live_measurement_received": (
+                    self.live_measurement_received
+                ),
+                "runtime_root": (
+                    str(self.runtime_root)
+                    if self.runtime_root is not None
+                    else None
+                ),
+                "file_poll_interval": (
+                    self.file_poll_interval
                 ),
                 "thickness_mm": self.thickness_mm,
             }

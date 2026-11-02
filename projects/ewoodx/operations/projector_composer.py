@@ -1,4 +1,3 @@
-
 """
 eWoodX - Projector Composer
 
@@ -17,7 +16,7 @@ Sources:
 3. Complete Grasshopper geometry stream
 
 Grasshopper geometry takes priority while active.
-The latest sensing measurement remains independently stored.
+The latest sensing measurement is stored independently.
 
 The legacy projector_live_viewer.py is not imported.
 
@@ -25,23 +24,22 @@ Run from repository root:
 
     python -m projects.ewoodx.operations.projector_composer
 
-Optional:
+Options:
     --no-stream
     --windowed
     --gh-timeout 5
     --file-poll 0.5
     --homography PATH
+    --frame-delay 16
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import time
+import math
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 from projects.ewoodx.config import (
     CALIBRATION_ROOT,
@@ -78,11 +76,19 @@ from projects.ewoodx.operations.streaming.projector_stream_service import (
 
 class EWoodXProjectorComposer:
     """
-    Main coordinator for the modular projector application.
+    Application coordinator for the modular projector.
 
-    Streaming callbacks only update the stream service's
-    latest-value buffers. The composer processes those buffers
-    in the main application loop.
+    Responsibilities:
+    - Initialize projection modules.
+    - Start and stop streaming.
+    - Route sensing and Grasshopper stream updates.
+    - Execute requested lifecycle actions.
+    - Coordinate rendering and keyboard input.
+    - Manage application shutdown.
+
+    Calibration, local JSON monitoring, projection state,
+    geometry transformations, rendering and command
+    interpretation belong to the projection package.
     """
 
     def __init__(
@@ -94,6 +100,10 @@ class EWoodXProjectorComposer:
         gh_timeout: float = 0.0,
         frame_delay_ms: int = 16,
     ) -> None:
+
+        # ---------------------------------------------------------
+        # Configuration
+        # ---------------------------------------------------------
 
         self.homography_file = (
             Path(homography_file)
@@ -113,17 +123,30 @@ class EWoodXProjectorComposer:
             file_poll_interval
         )
 
-        self.gh_timeout = float(gh_timeout)
-        self.frame_delay_ms = int(frame_delay_ms)
+        self.gh_timeout = float(
+            gh_timeout
+        )
 
-        if self.file_poll_interval <= 0:
+        self.frame_delay_ms = int(
+            frame_delay_ms
+        )
+
+        if (
+            not math.isfinite(self.file_poll_interval)
+            or self.file_poll_interval <= 0.0
+        ):
             raise ValueError(
-                "file_poll_interval must be positive."
+                "file_poll_interval must be "
+                "finite and positive."
             )
 
-        if self.gh_timeout < 0:
+        if (
+            not math.isfinite(self.gh_timeout)
+            or self.gh_timeout < 0.0
+        ):
             raise ValueError(
-                "gh_timeout cannot be negative."
+                "gh_timeout must be finite "
+                "and non-negative."
             )
 
         if self.frame_delay_ms < 1:
@@ -138,51 +161,29 @@ class EWoodXProjectorComposer:
         self.running = False
         self.paused = False
 
-        self.stream_service = None
-        self.stream_started = False
-
-        self.last_measurement_revision = 0
-        self.last_geometry_revision = 0
-
         # ---------------------------------------------------------
-        # Local measurement monitoring
+        # Projector geometry and calibration
         # ---------------------------------------------------------
 
-        self.last_file_check = 0.0
-        self.last_file_signature = None
-
-        # Once a live sensing measurement is received,
-        # it takes priority over local JSON polling.
-        self.live_measurement_received = False
-
-        # ---------------------------------------------------------
-        # Calibration
-        # ---------------------------------------------------------
-
-        homography = self._load_homography()
-
-        self.geometry = ProjectorGeometry(
-            homography=homography,
+        self.geometry = ProjectorGeometry.from_calibration(
+            homography_file=self.homography_file,
             projector_height_mm=PROJECTOR_HEIGHT_MM,
             projector_pos_x_mm=PROJECTOR_POS_X_MM,
             projector_pos_y_mm=PROJECTOR_POS_Y_MM,
         )
 
         # ---------------------------------------------------------
-        # Initial sensing measurement
+        # Projector state and local measurement fallback
         # ---------------------------------------------------------
 
-        initial_data = self._load_initial_measurement()
-
-        self.state = ProjectorState(
-            initial_data=self.geometry.prepare_measurement(
-                initial_data
-            ),
+        self.state = ProjectorState.from_runtime(
+            runtime_root=PROJECTOR_RUNTIME_ROOT,
             initial_thickness_mm=TIMBER_THICKNESS_MM,
+            file_poll_interval=self.file_poll_interval,
         )
 
         # ---------------------------------------------------------
-        # Renderer and controls
+        # Renderer
         # ---------------------------------------------------------
 
         self.renderer = ProjectorRenderer(
@@ -197,6 +198,10 @@ class EWoodXProjectorComposer:
             PROJECTOR_OFFSET_Y_MM
         )
 
+        # ---------------------------------------------------------
+        # Controls
+        # ---------------------------------------------------------
+
         self.controls = ProjectorControls(
             state=self.state,
             renderer=self.renderer,
@@ -206,296 +211,28 @@ class EWoodXProjectorComposer:
         # Streaming
         # ---------------------------------------------------------
 
-        if self.use_stream:
-            self.stream_service = (
-                ProjectorStreamService()
-            )
-
-    # -------------------------------------------------------------
-    # Calibration
-    # -------------------------------------------------------------
-
-    def _load_homography(self) -> np.ndarray:
-
-        if not self.homography_file.exists():
-
-            print(
-                "[Projector] Calibration not found:"
-            )
-            print(
-                f"  {self.homography_file}"
-            )
-            print(
-                "[Projector] Using identity homography "
-                "for testing."
-            )
-
-            return np.eye(
-                3,
-                dtype=np.float32,
-            )
-
-        with np.load(
-            self.homography_file,
-            allow_pickle=True,
-        ) as calibration:
-
-            homography = np.asarray(
-                calibration["H_world_to_projector"],
-                dtype=np.float32,
-            )
-
-        if homography.shape != (3, 3):
-            raise ValueError(
-                "Calibration homography must be 3x3."
-            )
-
-        if not np.all(np.isfinite(homography)):
-            raise ValueError(
-                "Calibration homography contains "
-                "non-finite values."
-            )
-
-        print(
-            "[Projector] Calibration loaded:"
-        )
-        print(
-            f"  {self.homography_file}"
+        self.stream_service = (
+            ProjectorStreamService()
+            if self.use_stream
+            else None
         )
 
-        return homography
+        self.stream_started = False
+
+        self.last_measurement_revision = 0
+        self.last_geometry_revision = 0
 
     # -------------------------------------------------------------
-    # Local measurement files
-    # -------------------------------------------------------------
-
-    @staticmethod
-    def _empty_measurement() -> dict:
-
-        return {
-            "source": "None",
-            "timber_id": 1,
-            "length_mm": 0.0,
-            "width_mm": 0.0,
-            "thickness_mm": 0.0,
-            "contour_mm": [],
-            "corners_mm": [],
-            "defects": [],
-            "cut_geo": [],
-            "mill_geo": [],
-            "points_geo": [],
-            "labels": [],
-        }
-
-    @staticmethod
-    def _measurement_files():
-
-        return list(
-            PROJECTOR_RUNTIME_ROOT.glob(
-                "timber_*_measurement.json"
-            )
-        )
-
-    def _latest_measurement_file(self):
-
-        files = self._measurement_files()
-
-        if not files:
-            return None
-
-        return max(
-            files,
-            key=lambda path: path.stat().st_mtime_ns,
-        )
-
-    @staticmethod
-    def _file_signature(path: Path):
-
-        stat = path.stat()
-
-        return (
-            str(path.resolve()),
-            stat.st_mtime_ns,
-            stat.st_size,
-        )
-
-    @staticmethod
-    def _read_measurement_file(
-        path: Path,
-    ) -> dict:
-
-        with path.open(
-            "r",
-            encoding="utf-8",
-        ) as handle:
-
-            data = json.load(handle)
-
-        if not isinstance(data, dict):
-            raise ValueError(
-                "Measurement JSON must contain "
-                "a dictionary."
-            )
-
-        # Preserve the original projector's sensing
-        # measurement schema and fallback fields.
-
-        return {
-            "source": path.name,
-            "timber_id": data.get(
-                "timber_id",
-                1,
-            ),
-            "length_mm": data.get(
-                "length_mm",
-                0.0,
-            ),
-            "width_mm": data.get(
-                "width_mm",
-                0.0,
-            ),
-            "thickness_mm": data.get(
-                "thickness_mm",
-                data.get(
-                    "timber_thickness_mm",
-                    TIMBER_THICKNESS_MM,
-                ),
-            ),
-            "contour_mm": data.get(
-                "contour_mm",
-                [],
-            ),
-            "corners_mm": data.get(
-                "corners_mm",
-                [],
-            ),
-            "defects": data.get(
-                "defects",
-                [],
-            ),
-            "cut_geo": [],
-            "mill_geo": [],
-            "points_geo": [],
-            "labels": [],
-        }
-
-    def _load_initial_measurement(self) -> dict:
-
-        try:
-
-            path = self._latest_measurement_file()
-
-            if path is None:
-
-                print(
-                    "[Projector] No local timber "
-                    "measurement found."
-                )
-
-                return self._empty_measurement()
-
-            data = self._read_measurement_file(
-                path
-            )
-
-            self.last_file_signature = (
-                self._file_signature(path)
-            )
-
-            print(
-                "[Projector] Initial measurement:"
-            )
-            print(
-                f"  {path.name}"
-            )
-
-            return data
-
-        except (
-            OSError,
-            ValueError,
-            TypeError,
-        ) as error:
-
-            print(
-                "[Projector] Initial measurement "
-                f"load failed: {error}"
-            )
-
-            return self._empty_measurement()
-
-    def _poll_measurement_file(self) -> None:
-        """
-        Check for new or modified local measurement JSON.
-
-        Once a live sensing stream has delivered a measurement,
-        the stream remains the preferred sensing source.
-        """
-
-        if self.live_measurement_received:
-            return
-
-        now = time.monotonic()
-
-        if (
-            now - self.last_file_check
-            < self.file_poll_interval
-        ):
-            return
-
-        self.last_file_check = now
-
-        try:
-
-            path = self._latest_measurement_file()
-
-            if path is None:
-                return
-
-            signature = self._file_signature(
-                path
-            )
-
-            if signature == self.last_file_signature:
-                return
-
-            data = self._read_measurement_file(
-                path
-            )
-
-            prepared = (
-                self.geometry.prepare_measurement(
-                    data
-                )
-            )
-
-            self.state.update_measurement(
-                prepared
-            )
-
-            self.last_file_signature = signature
-
-            print(
-                "[Projector] Local measurement updated:"
-                f" {path.name}"
-            )
-
-        except (
-            OSError,
-            ValueError,
-            TypeError,
-        ) as error:
-
-            print(
-                "[Projector] Local measurement "
-                f"update failed: {error}"
-            )
-
-    # -------------------------------------------------------------
-    # Streaming
+    # Streaming lifecycle
     # -------------------------------------------------------------
 
     def _start_stream(self) -> None:
+        """
+        Start the projector streaming endpoint.
+
+        If the streaming host is unavailable, continue
+        operating with local measurement monitoring.
+        """
 
         if self.stream_service is None:
             return
@@ -516,6 +253,8 @@ class EWoodXProjectorComposer:
             RuntimeError,
         ) as error:
 
+            self.stream_started = False
+
             print(
                 "[Projector] Streaming unavailable:"
                 f" {error}"
@@ -526,7 +265,20 @@ class EWoodXProjectorComposer:
                 "measurement monitoring."
             )
 
+    # -------------------------------------------------------------
+    # Streaming updates
+    # -------------------------------------------------------------
+
     def _poll_stream(self) -> None:
+        """
+        Route the latest streaming updates to ProjectorState.
+
+        The streaming service owns message reception
+        and latest-value buffering.
+
+        ProjectorState owns the active source and
+        sensing/Grasshopper priority.
+        """
 
         if (
             not self.stream_started
@@ -539,8 +291,7 @@ class EWoodXProjectorComposer:
         # ---------------------------------------------------------
 
         revision, message = (
-            self.stream_service
-            .get_latest_measurement()
+            self.stream_service.get_latest_measurement()
         )
 
         if (
@@ -561,10 +312,9 @@ class EWoodXProjectorComposer:
                 )
 
                 self.state.update_measurement(
-                    prepared
+                    prepared,
+                    from_stream=True,
                 )
-
-                self.live_measurement_received = True
 
                 print(
                     "[Projector] Sensing stream "
@@ -574,12 +324,11 @@ class EWoodXProjectorComposer:
             self.last_measurement_revision = revision
 
         # ---------------------------------------------------------
-        # Grasshopper / complete projector geometry
+        # Grasshopper geometry
         # ---------------------------------------------------------
 
         revision, message = (
-            self.stream_service
-            .get_latest_geometry()
+            self.stream_service.get_latest_geometry()
         )
 
         if (
@@ -597,15 +346,13 @@ class EWoodXProjectorComposer:
 
             if isinstance(payload, dict):
 
-                # Explicit disconnect message.
+                # Explicit GH disconnect convention.
                 #
-                # This is a composer-level convention.
-                # The streaming framework itself does not
-                # currently emit publisher disconnect events.
+                # The streaming host does not currently
+                # publish automatic publisher-disconnect
+                # notifications.
 
-                if payload.get(
-                    "gh_connected"
-                ) is False:
+                if payload.get("gh_connected") is False:
 
                     self.state.set_disconnected()
 
@@ -630,19 +377,22 @@ class EWoodXProjectorComposer:
             self.last_geometry_revision = revision
 
     # -------------------------------------------------------------
-    # Optional Grasshopper inactivity timeout
+    # Grasshopper inactivity
     # -------------------------------------------------------------
 
     def _check_gh_timeout(self) -> None:
+        """
+        Optionally restore sensing when GH stops publishing.
 
-        if self.gh_timeout <= 0:
+        Disabled by default to preserve the existing behavior.
+        """
+
+        if self.gh_timeout <= 0.0:
             return
 
-        timed_out = self.state.check_gh_timeout(
+        if self.state.check_gh_timeout(
             self.gh_timeout
-        )
-
-        if timed_out:
+        ):
 
             print(
                 "[Projector] Grasshopper inactive "
@@ -655,10 +405,17 @@ class EWoodXProjectorComposer:
             )
 
     # -------------------------------------------------------------
-    # Stream commands
+    # Remote commands
     # -------------------------------------------------------------
 
     def _process_commands(self) -> None:
+        """
+        Receive remote commands and delegate interpretation
+        to ProjectorControls.
+
+        The composer only executes lifecycle actions
+        and sends responses through the streaming service.
+        """
 
         if (
             not self.stream_started
@@ -666,8 +423,7 @@ class EWoodXProjectorComposer:
         ):
             return
 
-        # Bound work per frame so incoming commands cannot
-        # indefinitely delay the rendering loop.
+        # Limit command processing per frame.
 
         for _ in range(20):
 
@@ -678,84 +434,58 @@ class EWoodXProjectorComposer:
             if message is None:
                 break
 
-            command = message.get("command")
+            command = message.get(
+                "command"
+            )
+
             parameters = message.get(
                 "parameters",
                 {},
             )
 
-            source = message.get("source")
-            request_id = message.get("request_id")
+            source = message.get(
+                "source"
+            )
 
-            success = True
-            result = {}
+            request_id = message.get(
+                "request_id"
+            )
 
-            try:
+            response = self.controls.handle_command(
+                command=command,
+                parameters=parameters,
+                status=(
+                    self.get_status()
+                    if command == "get_status"
+                    else None
+                ),
+            )
 
-                if command == "get_status":
+            # -----------------------------------------------------
+            # Execute requested lifecycle action
+            # -----------------------------------------------------
 
-                    result = self.get_status()
+            if response["success"]:
 
-                elif command == "set_thickness":
+                action = response.get(
+                    "action"
+                )
 
-                    value = float(
-                        parameters["thickness_mm"]
-                    )
-
-                    self.state.set_thickness(
-                        value
-                    )
-
-                    result = {
-                        "thickness_mm": value,
-                    }
-
-                elif command == "pause":
+                if action == "pause":
 
                     self.paused = True
 
-                    result = {
-                        "paused": True,
-                    }
-
-                elif command == "resume":
+                elif action == "resume":
 
                     self.paused = False
 
-                    result = {
-                        "paused": False,
-                    }
-
-                elif command == "stop":
+                elif action == "stop":
 
                     self.running = False
 
-                    result = {
-                        "stopping": True,
-                    }
-
-                else:
-
-                    success = False
-
-                    result = {
-                        "error": (
-                            "Unsupported projector command: "
-                            f"{command}"
-                        )
-                    }
-
-            except (
-                KeyError,
-                TypeError,
-                ValueError,
-            ) as error:
-
-                success = False
-
-                result = {
-                    "error": str(error),
-                }
+            # -----------------------------------------------------
+            # Return command result
+            # -----------------------------------------------------
 
             if source and request_id:
 
@@ -764,8 +494,8 @@ class EWoodXProjectorComposer:
                     self.stream_service.send_command_result(
                         target=source,
                         request_id=request_id,
-                        success=success,
-                        result=result,
+                        success=response["success"],
+                        result=response["result"],
                     )
 
                 except (
@@ -779,13 +509,23 @@ class EWoodXProjectorComposer:
                     )
 
     # -------------------------------------------------------------
-    # Status
+    # Application status
     # -------------------------------------------------------------
 
     def get_status(self) -> dict:
+        """
+        Aggregate application, streaming and projector status.
+
+        ProjectorState and ProjectorControls provide
+        their own independent status information.
+        """
+
+        state_status = (
+            self.state.get_status()
+        )
 
         return {
-            **self.state.get_status(),
+            **state_status,
             "stream_connected": (
                 self.stream_service.connected
                 if self.stream_service is not None
@@ -798,7 +538,9 @@ class EWoodXProjectorComposer:
                 self.homography_file
             ),
             "local_measurement_enabled": (
-                not self.live_measurement_received
+                not state_status[
+                    "live_measurement_received"
+                ]
             ),
             "controls": (
                 self.controls.get_parameters()
@@ -840,7 +582,7 @@ class EWoodXProjectorComposer:
             "GH timeout:",
             (
                 f"{self.gh_timeout:.1f}s"
-                if self.gh_timeout > 0
+                if self.gh_timeout > 0.0
                 else "disabled"
             ),
         )
@@ -861,10 +603,16 @@ class EWoodXProjectorComposer:
         print()
 
     # -------------------------------------------------------------
-    # Main loop
+    # Main application loop
     # -------------------------------------------------------------
 
     def run(self) -> None:
+        """
+        Run the projector application.
+
+        Data and commands continue to be processed
+        even when rendering is paused.
+        """
 
         self._print_startup_info()
 
@@ -887,32 +635,44 @@ class EWoodXProjectorComposer:
 
             while self.running:
 
-                # Always process incoming data, even while
-                # projection rendering is paused.
+                # -------------------------------------------------
+                # Update projection sources
+                # -------------------------------------------------
 
                 self._poll_stream()
 
-                self._poll_measurement_file()
-
-                self._process_commands()
+                self.state.poll_measurement_file()
 
                 self._check_gh_timeout()
 
-                if not self.paused:
+                # -------------------------------------------------
+                # Remote commands
+                # -------------------------------------------------
 
-                    snapshot = (
-                        self.state.get_snapshot()
-                    )
+                self._process_commands()
+
+                if not self.running:
+                    break
+
+                # -------------------------------------------------
+                # Render current state
+                # -------------------------------------------------
+
+                if not self.paused:
 
                     frame = (
                         self.renderer.render_snapshot(
-                            snapshot
+                            self.state.get_snapshot()
                         )
                     )
 
                     self.renderer.show_frame(
                         frame
                     )
+
+                # -------------------------------------------------
+                # Keyboard input
+                # -------------------------------------------------
 
                 key = self.renderer.poll_key(
                     self.frame_delay_ms
@@ -921,7 +681,9 @@ class EWoodXProjectorComposer:
                 if key != -1:
 
                     self.running = (
-                        self.controls.handle_key(key)
+                        self.controls.handle_key(
+                            key
+                        )
                     )
 
         except KeyboardInterrupt:

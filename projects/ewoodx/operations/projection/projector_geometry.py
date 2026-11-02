@@ -1,10 +1,11 @@
 """
 eWoodX - Projector Geometry
 
-Geometry preparation and coordinate transformations for
-the eWoodX projector.
+Geometry preparation, calibration, and coordinate
+transformations for the eWoodX projector.
 
 Responsibilities:
+- Load calibrated projector homography.
 - Prepare sensing measurements for projection.
 - Accept complete Grasshopper geometry payloads.
 - Convert world coordinates (mm) into projector pixels.
@@ -22,6 +23,7 @@ Does not handle:
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -60,6 +62,120 @@ class ProjectorGeometry:
         )
 
     # -------------------------------------------------------------
+    # Calibration loading
+    # -------------------------------------------------------------
+
+    @staticmethod
+    def load_homography(
+        homography_file: str | Path,
+    ) -> np.ndarray:
+        """
+        Load the calibrated world-to-projector homography.
+
+        Expected NPZ field:
+            H_world_to_projector
+
+        If the calibration file does not exist, return
+        an identity homography for testing.
+
+        Invalid or corrupted calibration files raise
+        an exception rather than silently falling back.
+
+        This preserves the existing projector behavior
+        while centralizing calibration loading.
+        """
+
+        homography_file = Path(
+            homography_file
+        )
+
+        if not homography_file.exists():
+
+            print(
+                "[Projector] Calibration not found:"
+            )
+
+            print(
+                f"  {homography_file}"
+            )
+
+            print(
+                "[Projector] Using identity homography "
+                "for testing."
+            )
+
+            return np.eye(
+                3,
+                dtype=np.float32,
+            )
+
+        with np.load(
+            homography_file,
+            allow_pickle=True,
+        ) as calibration:
+
+            homography = np.asarray(
+                calibration["H_world_to_projector"],
+                dtype=np.float32,
+            )
+
+        if homography.shape != (3, 3):
+
+            raise ValueError(
+                "Calibration homography must be 3x3."
+            )
+
+        if not np.all(
+            np.isfinite(homography)
+        ):
+
+            raise ValueError(
+                "Calibration homography contains "
+                "non-finite values."
+            )
+
+        print(
+            "[Projector] Calibration loaded:"
+        )
+
+        print(
+            f"  {homography_file}"
+        )
+
+        return homography
+
+    # -------------------------------------------------------------
+    # Alternative constructor
+    # -------------------------------------------------------------
+
+    @classmethod
+    def from_calibration(
+        cls,
+        homography_file: str | Path,
+        projector_height_mm: float,
+        projector_pos_x_mm: float,
+        projector_pos_y_mm: float,
+    ) -> ProjectorGeometry:
+        """
+        Create ProjectorGeometry directly from
+        a projector calibration NPZ file.
+
+        The default constructor remains available
+        for tests using an in-memory homography.
+        """
+
+        homography = cls.load_homography(
+            homography_file
+        )
+
+        return cls(
+            homography=homography,
+            projector_height_mm=projector_height_mm,
+            projector_pos_x_mm=projector_pos_x_mm,
+            projector_pos_y_mm=projector_pos_y_mm,
+        )
+
+    # -------------------------------------------------------------
     # Sensing measurement preparation
     # -------------------------------------------------------------
 
@@ -88,11 +204,14 @@ class ProjectorGeometry:
         """
 
         if not isinstance(measurement, dict):
+
             raise TypeError(
                 "Measurement must be a dictionary."
             )
 
-        data = copy.deepcopy(measurement)
+        data = copy.deepcopy(
+            measurement
+        )
 
         if data.get("thickness_mm") is None:
 
@@ -101,15 +220,31 @@ class ProjectorGeometry:
             )
 
             if thickness is not None:
+
                 data["thickness_mm"] = thickness
 
         # Add only missing optional geometry collections.
         # Do not overwrite existing geometry.
 
-        data.setdefault("cut_geo", [])
-        data.setdefault("mill_geo", [])
-        data.setdefault("points_geo", [])
-        data.setdefault("labels", [])
+        data.setdefault(
+            "cut_geo",
+            [],
+        )
+
+        data.setdefault(
+            "mill_geo",
+            [],
+        )
+
+        data.setdefault(
+            "points_geo",
+            [],
+        )
+
+        data.setdefault(
+            "labels",
+            [],
+        )
 
         return data
 
@@ -131,12 +266,18 @@ class ProjectorGeometry:
         the current sensing measurement.
         """
 
-        if not isinstance(geometry, dict):
+        if not isinstance(
+            geometry,
+            dict,
+        ):
+
             raise TypeError(
                 "Grasshopper geometry must be a dictionary."
             )
 
-        return copy.deepcopy(geometry)
+        return copy.deepcopy(
+            geometry
+        )
 
     # -------------------------------------------------------------
     # World coordinates -> projector pixels
@@ -161,7 +302,10 @@ class ProjectorGeometry:
         3. Apply calibrated homography.
         """
 
-        if points_mm is None or len(points_mm) == 0:
+        if (
+            points_mm is None
+            or len(points_mm) == 0
+        ):
 
             return np.empty(
                 (0, 2),
@@ -173,7 +317,10 @@ class ProjectorGeometry:
             dtype=np.float32,
         ).copy()
 
-        if points.ndim == 1 and len(points) == 2:
+        if (
+            points.ndim == 1
+            and len(points) == 2
+        ):
 
             points = points.reshape(
                 1, 2
@@ -230,7 +377,10 @@ class ProjectorGeometry:
             self.homography,
         )
 
-        return projected.reshape(-1, 2)
+        return projected.reshape(
+            -1,
+            2,
+        )
 
     # -------------------------------------------------------------
     # Color conversion
@@ -253,28 +403,37 @@ class ProjectorGeometry:
         """
 
         if color_val is None:
+
             return default_bgr
 
         try:
 
-            if isinstance(color_val, str):
+            if isinstance(
+                color_val,
+                str,
+            ):
 
                 color_string = (
                     color_val.strip().lstrip("#")
                 )
 
-                if len(color_string) in (6, 8):
+                if len(
+                    color_string
+                ) in (6, 8):
 
                     red = int(
-                        color_string[0:2], 16
+                        color_string[0:2],
+                        16,
                     )
 
                     green = int(
-                        color_string[2:4], 16
+                        color_string[2:4],
+                        16,
                     )
 
                     blue = int(
-                        color_string[4:6], 16
+                        color_string[4:6],
+                        16,
                     )
 
                     return (
@@ -288,11 +447,21 @@ class ProjectorGeometry:
                 (list, tuple),
             ):
 
-                if len(color_val) >= 3:
+                if len(
+                    color_val
+                ) >= 3:
 
-                    red = int(color_val[0])
-                    green = int(color_val[1])
-                    blue = int(color_val[2])
+                    red = int(
+                        color_val[0]
+                    )
+
+                    green = int(
+                        color_val[1]
+                    )
+
+                    blue = int(
+                        color_val[2]
+                    )
 
                     return (
                         blue,
@@ -300,26 +469,38 @@ class ProjectorGeometry:
                         red,
                     )
 
-            elif isinstance(color_val, dict):
+            elif isinstance(
+                color_val,
+                dict,
+            ):
 
                 red = int(
                     color_val.get(
                         "R",
-                        color_val.get("r", 255),
+                        color_val.get(
+                            "r",
+                            255,
+                        ),
                     )
                 )
 
                 green = int(
                     color_val.get(
                         "G",
-                        color_val.get("g", 255),
+                        color_val.get(
+                            "g",
+                            255,
+                        ),
                     )
                 )
 
                 blue = int(
                     color_val.get(
                         "B",
-                        color_val.get("b", 255),
+                        color_val.get(
+                            "b",
+                            255,
+                        ),
                     )
                 )
 
@@ -330,6 +511,7 @@ class ProjectorGeometry:
                 )
 
         except Exception:
+
             pass
 
         return default_bgr

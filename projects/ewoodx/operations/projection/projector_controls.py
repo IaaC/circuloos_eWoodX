@@ -1,9 +1,7 @@
 """
 eWoodX - Projector Controls
 
-Interactive keyboard controls for the eWoodX projector.
-
-Extracted from the existing projector_live_viewer.py.
+Keyboard and remote command controls for the eWoodX projector.
 
 Responsibilities:
 - Adjust timber thickness compensation.
@@ -11,14 +9,15 @@ Responsibilities:
 - Adjust offset step size.
 - Reset projection offsets.
 - Toggle the projector HUD.
-- Handle application exit.
+- Interpret remote projector commands.
+- Request application lifecycle actions.
 
 Does not handle:
-- TCP communication
+- TCP communication or command responses
 - Geometry processing
 - OpenCV rendering
 - JSON file monitoring
-- Application lifecycle
+- Application lifecycle execution
 
 Keyboard mappings and behavior are preserved from
 the existing projector viewer.
@@ -37,10 +36,13 @@ from projects.ewoodx.operations.projection.projector_renderer import (
 
 class ProjectorControls:
     """
-    Keyboard controls for the modular eWoodX projector.
+    Keyboard and remote controls for the modular projector.
 
-    ProjectorState stores the active timber thickness.
+    ProjectorState stores timber thickness.
     ProjectorRenderer stores offsets, step size and HUD state.
+
+    Remote lifecycle commands return requested actions
+    for the composer to execute.
     """
 
     STEP_SIZES = [
@@ -311,6 +313,171 @@ class ProjectorControls:
             )
 
         return True
+
+    # -------------------------------------------------------------
+    # Remote command interpretation
+    # -------------------------------------------------------------
+
+    def handle_command(
+        self,
+        command: str,
+        parameters: dict | None = None,
+        status: dict | None = None,
+    ) -> dict:
+        """
+        Interpret a remote projector command.
+
+        Returns:
+            {
+                "success": bool,
+                "result": dict,
+                "action": str | None,
+            }
+
+        The composer remains responsible for:
+        - Executing lifecycle actions.
+        - Collecting application-wide status.
+        - Sending command responses.
+
+        Supported commands:
+        - get_status
+        - set_thickness
+        - pause
+        - resume
+        - stop
+
+        This preserves the command set of the
+        existing projector composer.
+        """
+
+        if parameters is None:
+            parameters = {}
+
+        if not isinstance(parameters, dict):
+
+            return {
+                "success": False,
+                "result": {
+                    "error": (
+                        "Command parameters "
+                        "must be a dictionary."
+                    ),
+                },
+                "action": None,
+            }
+
+        try:
+
+            # -----------------------------------------------------
+            # Status
+            # -----------------------------------------------------
+
+            if command == "get_status":
+
+                if status is None:
+                    status = {}
+
+                return {
+                    "success": True,
+                    "result": dict(status),
+                    "action": None,
+                }
+
+            # -----------------------------------------------------
+            # Thickness
+            # -----------------------------------------------------
+
+            elif command == "set_thickness":
+
+                value = float(
+                    parameters["thickness_mm"]
+                )
+
+                self.state.set_thickness(
+                    value
+                )
+
+                return {
+                    "success": True,
+                    "result": {
+                        "thickness_mm": value,
+                    },
+                    "action": None,
+                }
+
+            # -----------------------------------------------------
+            # Pause
+            # -----------------------------------------------------
+
+            elif command == "pause":
+
+                return {
+                    "success": True,
+                    "result": {
+                        "paused": True,
+                    },
+                    "action": "pause",
+                }
+
+            # -----------------------------------------------------
+            # Resume
+            # -----------------------------------------------------
+
+            elif command == "resume":
+
+                return {
+                    "success": True,
+                    "result": {
+                        "paused": False,
+                    },
+                    "action": "resume",
+                }
+
+            # -----------------------------------------------------
+            # Stop
+            # -----------------------------------------------------
+
+            elif command == "stop":
+
+                return {
+                    "success": True,
+                    "result": {
+                        "stopping": True,
+                    },
+                    "action": "stop",
+                }
+
+            # -----------------------------------------------------
+            # Unsupported command
+            # -----------------------------------------------------
+
+            else:
+
+                return {
+                    "success": False,
+                    "result": {
+                        "error": (
+                            "Unsupported projector command: "
+                            f"{command}"
+                        ),
+                    },
+                    "action": None,
+                }
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as error:
+
+            return {
+                "success": False,
+                "result": {
+                    "error": str(error),
+                },
+                "action": None,
+            }
 
     # -------------------------------------------------------------
     # Current control parameters
