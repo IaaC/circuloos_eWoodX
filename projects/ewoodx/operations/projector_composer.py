@@ -35,11 +35,21 @@ Options:
 
 from __future__ import annotations
 
-import argparse
 import math
+import sys
 from pathlib import Path
 
 import cv2
+
+
+# -------------------------------------------------------------
+# Project root resolution
+# -------------------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from projects.ewoodx.config import (
     CALIBRATION_ROOT,
@@ -73,6 +83,32 @@ from projects.ewoodx.operations.streaming.projector_stream_service import (
     ProjectorStreamService,
 )
 
+# =============================================================
+# PROJECTOR CONFIGURATION
+# =============================================================
+
+# Calibration
+HOMOGRAPHY_FILE = (
+    CALIBRATION_ROOT
+    / "projector"
+    / PROJECTOR_CALIBRATION_MODE
+    / "projector_homography.npz"
+)
+
+# Display
+FULLSCREEN = True
+FRAME_DELAY_MS = 16
+
+# Local sensing measurement
+FILE_POLL_INTERVAL = 0.5
+
+# Grasshopper geometry
+# 0.0 = timeout disabled
+GH_TIMEOUT = 0.0
+
+# Streaming is always enabled.
+# If unavailable at startup, local JSON monitoring continues.
+
 
 class EWoodXProjectorComposer:
     """
@@ -91,44 +127,26 @@ class EWoodXProjectorComposer:
     interpretation belong to the projection package.
     """
 
-    def __init__(
-        self,
-        homography_file: Path | None = None,
-        use_stream: bool = True,
-        fullscreen: bool = True,
-        file_poll_interval: float = 0.5,
-        gh_timeout: float = 0.0,
-        frame_delay_ms: int = 16,
-    ) -> None:
+    def __init__(self) -> None:
 
         # ---------------------------------------------------------
         # Configuration
         # ---------------------------------------------------------
 
-        self.homography_file = (
-            Path(homography_file)
-            if homography_file is not None
-            else (
-                CALIBRATION_ROOT
-                / "projector"
-                / PROJECTOR_CALIBRATION_MODE
-                / "projector_homography.npz"
-            )
-        )
+        self.homography_file = Path(HOMOGRAPHY_FILE)
 
-        self.use_stream = bool(use_stream)
-        self.fullscreen = bool(fullscreen)
+        self.fullscreen = bool(FULLSCREEN)
 
         self.file_poll_interval = float(
-            file_poll_interval
+            FILE_POLL_INTERVAL
         )
 
         self.gh_timeout = float(
-            gh_timeout
+            GH_TIMEOUT
         )
 
         self.frame_delay_ms = int(
-            frame_delay_ms
+            FRAME_DELAY_MS
         )
 
         if (
@@ -211,11 +229,7 @@ class EWoodXProjectorComposer:
         # Streaming
         # ---------------------------------------------------------
 
-        self.stream_service = (
-            ProjectorStreamService()
-            if self.use_stream
-            else None
-        )
+        self.stream_service = ProjectorStreamService()
 
         self.stream_started = False
 
@@ -574,8 +588,7 @@ class EWoodXProjectorComposer:
         )
 
         print(
-            "Streaming:",
-            "enabled" if self.use_stream else "disabled",
+            "Streaming: enabled (local JSON fallback)"
         )
 
         print(
@@ -620,8 +633,7 @@ class EWoodXProjectorComposer:
 
         try:
 
-            if self.use_stream:
-                self._start_stream()
+            self._start_stream()
 
             self.renderer.create_window()
 
@@ -707,78 +719,13 @@ class EWoodXProjectorComposer:
             )
 
 
-# -------------------------------------------------------------
-# Command-line entry point
-# -------------------------------------------------------------
+# =============================================================
+# APPLICATION ENTRY POINT
+# =============================================================
 
 def main() -> None:
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "eWoodX modular projector composer"
-        ),
-    )
-
-    parser.add_argument(
-        "--homography",
-        type=Path,
-        default=None,
-        help="Path to projector homography NPZ.",
-    )
-
-    parser.add_argument(
-        "--no-stream",
-        action="store_true",
-        help="Run without the streaming service.",
-    )
-
-    parser.add_argument(
-        "--windowed",
-        action="store_true",
-        help="Disable fullscreen projector display.",
-    )
-
-    parser.add_argument(
-        "--file-poll",
-        type=float,
-        default=0.5,
-        help=(
-            "Local measurement file polling "
-            "interval in seconds."
-        ),
-    )
-
-    parser.add_argument(
-        "--gh-timeout",
-        type=float,
-        default=0.0,
-        help=(
-            "Optional Grasshopper inactivity "
-            "timeout in seconds. "
-            "0 disables timeout."
-        ),
-    )
-
-    parser.add_argument(
-        "--frame-delay",
-        type=int,
-        default=16,
-        help=(
-            "OpenCV keyboard polling delay "
-            "in milliseconds."
-        ),
-    )
-
-    args = parser.parse_args()
-
-    composer = EWoodXProjectorComposer(
-        homography_file=args.homography,
-        use_stream=not args.no_stream,
-        fullscreen=not args.windowed,
-        file_poll_interval=args.file_poll,
-        gh_timeout=args.gh_timeout,
-        frame_delay_ms=args.frame_delay,
-    )
+    composer = EWoodXProjectorComposer()
 
     composer.run()
 
