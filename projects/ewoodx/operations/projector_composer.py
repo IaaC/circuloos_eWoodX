@@ -1,7 +1,8 @@
 """
 eWoodX - Projector Composer
 
-Main application for the modular eWoodX projection system.
+Application coordinator for the modular eWoodX
+projection system.
 
 Coordinates:
 - ProjectorState
@@ -13,28 +14,18 @@ Coordinates:
 Data sources:
 - Local timber measurement JSON
 - Live sensing measurement stream
-- Complete Grasshopper geometry stream
+- Grasshopper geometry stream
 
-Operation:
-- Loads the latest local timber measurement at startup.
-- Automatically attempts to connect to the streaming host.
-- Falls back to local JSON monitoring if streaming is unavailable.
-- Uses live sensing measurements when received.
-- Displays Grasshopper geometry with priority while active.
-- Retains the latest sensing measurement independently.
-- Restores sensing projection when Grasshopper becomes inactive.
+Responsibilities:
+- Initialize projection modules.
+- Start and stop optional streaming.
+- Route sensing and Grasshopper updates.
+- Process remote commands.
+- Coordinate rendering and keyboard input.
+- Manage application shutdown.
 
-Configuration:
-- Runtime settings are defined at the beginning of this file.
-- Streaming is enabled automatically.
-- Grasshopper inactivity timeout is optional.
-- No command-line arguments are required.
-
-Execution:
-- Run directly from VS Code.
-- Or execute as a module from the repository root:
-
-    python -m projects.ewoodx.operations.projector_composer
+Runtime configuration is supplied by:
+    projects.ewoodx.entrypoints.projector_entrypoint
 
 The legacy projector_live_viewer.py remains independent.
 """
@@ -49,7 +40,7 @@ import cv2
 
 
 # -------------------------------------------------------------
-# Project root resolution
+# Repository import path
 # -------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -57,10 +48,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
 from projects.ewoodx.config import (
-    CALIBRATION_ROOT,
     PROJECTOR_RUNTIME_ROOT,
-    PROJECTOR_CALIBRATION_MODE,
     PROJECTOR_HEIGHT_MM,
     PROJECTOR_POS_X_MM,
     PROJECTOR_POS_Y_MM,
@@ -89,71 +79,62 @@ from projects.ewoodx.operations.streaming.projector_stream_service import (
     ProjectorStreamService,
 )
 
+
 # =============================================================
-# PROJECTOR CONFIGURATION
+# PROJECTOR COMPOSER
 # =============================================================
-
-# Calibration
-HOMOGRAPHY_FILE = (
-    CALIBRATION_ROOT
-    / "projector"
-    / PROJECTOR_CALIBRATION_MODE
-    / "projector_homography.npz"
-)
-
-# Display
-FULLSCREEN = True
-FRAME_DELAY_MS = 16
-
-# Local sensing measurement
-FILE_POLL_INTERVAL = 0.5
-
-# Grasshopper geometry
-# 0.0 = timeout disabled
-GH_TIMEOUT = 0.0
-
-# Streaming is always enabled.
-# If unavailable at startup, local JSON monitoring continues.
-
 
 class EWoodXProjectorComposer:
     """
     Application coordinator for the modular projector.
 
-    Responsibilities:
-    - Initialize projection modules.
-    - Start and stop streaming.
-    - Route sensing and Grasshopper stream updates.
-    - Execute requested lifecycle actions.
-    - Coordinate rendering and keyboard input.
-    - Manage application shutdown.
+    Runtime settings are provided by the entrypoint.
 
-    Calibration, local JSON monitoring, projection state,
-    geometry transformations, rendering and command
-    interpretation belong to the projection package.
+    Projection modules retain responsibility for
+    calibration, geometry, state, rendering, and controls.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        homography_file: str | Path,
+        fullscreen: bool = True,
+        frame_delay_ms: int = 16,
+        file_poll_interval: float = 0.5,
+        gh_timeout: float = 0.0,
+        enable_streaming: bool = True,
+    ) -> None:
 
         # ---------------------------------------------------------
-        # Configuration
+        # Runtime configuration
         # ---------------------------------------------------------
 
-        self.homography_file = Path(HOMOGRAPHY_FILE)
-
-        self.fullscreen = bool(FULLSCREEN)
-
-        self.file_poll_interval = float(
-            FILE_POLL_INTERVAL
+        self.homography_file = Path(
+            homography_file
         )
 
-        self.gh_timeout = float(
-            GH_TIMEOUT
+        self.fullscreen = bool(
+            fullscreen
         )
 
         self.frame_delay_ms = int(
-            FRAME_DELAY_MS
+            frame_delay_ms
         )
+
+        self.file_poll_interval = float(
+            file_poll_interval
+        )
+
+        self.gh_timeout = float(
+            gh_timeout
+        )
+
+        self.enable_streaming = bool(
+            enable_streaming
+        )
+
+        # ---------------------------------------------------------
+        # Configuration validation
+        # ---------------------------------------------------------
 
         if (
             not math.isfinite(self.file_poll_interval)
@@ -235,23 +216,29 @@ class EWoodXProjectorComposer:
         # Streaming
         # ---------------------------------------------------------
 
-        self.stream_service = ProjectorStreamService()
+        self.stream_service = (
+            ProjectorStreamService()
+            if self.enable_streaming
+            else None
+        )
 
         self.stream_started = False
 
         self.last_measurement_revision = 0
         self.last_geometry_revision = 0
 
-    # -------------------------------------------------------------
-    # Streaming lifecycle
-    # -------------------------------------------------------------
+    # =============================================================
+    # STREAMING LIFECYCLE
+    # =============================================================
 
     def _start_stream(self) -> None:
         """
         Start the projector streaming endpoint.
 
+        If streaming is disabled, operate locally.
+
         If the streaming host is unavailable, continue
-        operating with local measurement monitoring.
+        with local measurement monitoring.
         """
 
         if self.stream_service is None:
@@ -271,6 +258,7 @@ class EWoodXProjectorComposer:
             ConnectionError,
             OSError,
             RuntimeError,
+            TimeoutError,
         ) as error:
 
             self.stream_started = False
@@ -285,9 +273,9 @@ class EWoodXProjectorComposer:
                 "measurement monitoring."
             )
 
-    # -------------------------------------------------------------
-    # Streaming updates
-    # -------------------------------------------------------------
+    # =============================================================
+    # STREAMING UPDATES
+    # =============================================================
 
     def _poll_stream(self) -> None:
         """
@@ -396,15 +384,15 @@ class EWoodXProjectorComposer:
 
             self.last_geometry_revision = revision
 
-    # -------------------------------------------------------------
-    # Grasshopper inactivity
-    # -------------------------------------------------------------
+    # =============================================================
+    # GRASSHOPPER INACTIVITY
+    # =============================================================
 
     def _check_gh_timeout(self) -> None:
         """
         Optionally restore sensing when GH stops publishing.
 
-        Disabled by default to preserve the existing behavior.
+        Disabled by default to preserve existing behavior.
         """
 
         if self.gh_timeout <= 0.0:
@@ -424,17 +412,17 @@ class EWoodXProjectorComposer:
                 "sensing measurement."
             )
 
-    # -------------------------------------------------------------
-    # Remote commands
-    # -------------------------------------------------------------
+    # =============================================================
+    # REMOTE COMMANDS
+    # =============================================================
 
     def _process_commands(self) -> None:
         """
         Receive remote commands and delegate interpretation
         to ProjectorControls.
 
-        The composer only executes lifecycle actions
-        and sends responses through the streaming service.
+        The composer executes lifecycle actions and sends
+        responses through the streaming service.
         """
 
         if (
@@ -528,16 +516,13 @@ class EWoodXProjectorComposer:
                         f"failed: {error}"
                     )
 
-    # -------------------------------------------------------------
-    # Application status
-    # -------------------------------------------------------------
+    # =============================================================
+    # APPLICATION STATUS
+    # =============================================================
 
     def get_status(self) -> dict:
         """
         Aggregate application, streaming and projector status.
-
-        ProjectorState and ProjectorControls provide
-        their own independent status information.
         """
 
         state_status = (
@@ -552,6 +537,7 @@ class EWoodXProjectorComposer:
                 else False
             ),
             "stream_started": self.stream_started,
+            "stream_enabled": self.enable_streaming,
             "paused": self.paused,
             "fullscreen": self.fullscreen,
             "homography_file": str(
@@ -567,9 +553,9 @@ class EWoodXProjectorComposer:
             ),
         }
 
-    # -------------------------------------------------------------
-    # Startup information
-    # -------------------------------------------------------------
+    # =============================================================
+    # STARTUP INFORMATION
+    # =============================================================
 
     def _print_startup_info(self) -> None:
 
@@ -593,9 +579,19 @@ class EWoodXProjectorComposer:
             self.state.get_active_source(),
         )
 
-        print(
-            "Streaming: enabled (local JSON fallback)"
-        )
+        if self.enable_streaming:
+
+            print(
+                "Streaming: enabled "
+                "(local JSON fallback)"
+            )
+
+        else:
+
+            print(
+                "Streaming: disabled "
+                "(local JSON monitoring)"
+            )
 
         print(
             "GH timeout:",
@@ -621,9 +617,9 @@ class EWoodXProjectorComposer:
         print("=" * 60)
         print()
 
-    # -------------------------------------------------------------
-    # Main application loop
-    # -------------------------------------------------------------
+    # =============================================================
+    # MAIN APPLICATION LOOP
+    # =============================================================
 
     def run(self) -> None:
         """
@@ -723,18 +719,3 @@ class EWoodXProjectorComposer:
             print(
                 "[Projector] Shutdown complete."
             )
-
-
-# =============================================================
-# APPLICATION ENTRY POINT
-# =============================================================
-
-def main() -> None:
-
-    composer = EWoodXProjectorComposer()
-
-    composer.run()
-
-
-if __name__ == "__main__":
-    main()
