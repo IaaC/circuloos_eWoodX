@@ -45,7 +45,7 @@ SENSING_AGENT_POLL_INTERVAL = 1.0
 # ---------------------------------------------------------------------
 
 # Central streaming host
-STREAM_BIND_HOST = "127.0.0.1"
+STREAM_BIND_HOST = "0.0.0.0"
 STREAM_HOST = "127.0.0.1"
 
 # Dedicated ports
