@@ -90,7 +90,32 @@ def main() -> None:
         print()
         print("=" * 60)
 
+        # Monitor registered agents without modifying the host.
+        previous_agents = {}
+
         while True:
+            current_agents = host.connected_agents
+
+            # Newly registered agents
+            for agent_id, channel in current_agents.items():
+                if agent_id not in previous_agents:
+                    print(
+                        f"[eWoodX] Agent connected: "
+                        f"{agent_id} ({channel})",
+                        flush=True,
+                    )
+
+            # Disconnected agents
+            for agent_id, channel in previous_agents.items():
+                if agent_id not in current_agents:
+                    print(
+                        f"[eWoodX] Agent disconnected: "
+                        f"{agent_id} ({channel})",
+                        flush=True,
+                    )
+
+            previous_agents = current_agents.copy()
+
             time.sleep(0.5)
 
     except KeyboardInterrupt:
