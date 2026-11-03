@@ -5,7 +5,7 @@ Owns runtime configuration and launches the modular
 projector composer.
 
 Run from repository root:
-    python -m projects.ewoodx.entrypoints.projector_entrypoint
+    python -m projects.ewoodx.entrypoints.projector_entrypoint_stream
 """
 
 from __future__ import annotations
