@@ -59,6 +59,14 @@ from projects.ewoodx.operations.sensing_composer import (
     EWoodXSensingComposer,
 )
 
+# =============================================================
+# SENSING RUNTIME CONFIGURATION
+# =============================================================
+
+ENABLE_HANDDRAW = False
+ENABLE_STREAMING = True
+ENABLE_PREVIEW = True
+
 
 class EWoodXSensingEntrypointStream:
     """
@@ -76,9 +84,9 @@ class EWoodXSensingEntrypointStream:
         entry: EntryPaths | None = None,
         equipment: str | None = None,
         segmentation_mode: str | None = None,
-        enable_handdraw: bool = True,
-        enable_streaming: bool = True,
-        enable_preview: bool = True,
+        enable_handdraw: bool = ENABLE_HANDDRAW,
+        enable_streaming: bool = ENABLE_STREAMING,
+        enable_preview: bool = ENABLE_PREVIEW,
         intrinsic_file: Path | None = None,
     ) -> None:
 
