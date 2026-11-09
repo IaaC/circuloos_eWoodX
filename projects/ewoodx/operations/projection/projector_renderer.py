@@ -111,6 +111,93 @@ class ProjectorRenderer:
             .reshape(-1, 1, 2)
         )
 
+    
+    @staticmethod
+    def _normalize_contours(raw_data) -> list:
+        """
+        Normalize single or multiple timber contours.
+
+        Single:
+            [[x, y], [x, y], ...]
+
+        Multiple:
+            [
+                [[x, y], [x, y], ...],
+                [[x, y], [x, y], ...]
+            ]
+
+        Returns a list of valid Nx2 contours.
+        """
+
+        if raw_data is None:
+            return []
+
+        try:
+            points = np.asarray(
+                raw_data,
+                dtype=np.float32,
+            )
+
+            # Single contour: Nx2
+            if points.ndim == 2 and points.shape[1] == 2:
+                candidates = [points]
+
+            # Multiple contours: MxNx2
+            elif points.ndim == 3 and points.shape[2] == 2:
+                candidates = list(points)
+
+            else:
+                # Support contours with different
+                # numbers of points.
+                candidates = []
+
+                for contour in raw_data:
+                    try:
+                        arr = np.asarray(
+                            contour,
+                            dtype=np.float32,
+                        )
+
+                        if arr.ndim == 2 and arr.shape[1] == 2:
+                            candidates.append(arr)
+
+                    except (TypeError, ValueError):
+                        continue
+
+            return [
+                contour
+                for contour in candidates
+                if (
+                    len(contour) >= 3
+                    and np.isfinite(contour).all()
+                )
+            ]
+
+        except (TypeError, ValueError):
+            # Ragged multi-contour collections are
+            # expected when contours differ in size.
+            candidates = []
+
+            for contour in raw_data:
+                try:
+                    arr = np.asarray(
+                        contour,
+                        dtype=np.float32,
+                    )
+
+                    if (
+                        arr.ndim == 2
+                        and arr.shape[1] == 2
+                        and len(arr) >= 3
+                        and np.isfinite(arr).all()
+                    ):
+                        candidates.append(arr)
+
+                except (TypeError, ValueError):
+                    continue
+
+            return candidates
+
     # -------------------------------------------------------------
     # Main rendering
     # -------------------------------------------------------------
@@ -213,6 +300,7 @@ class ProjectorRenderer:
             )
         )
 
+
         # ---------------------------------------------------------
         # Timber contour
         # ---------------------------------------------------------
@@ -231,12 +319,23 @@ class ProjectorRenderer:
             default_bgr=(255, 255, 255),
         )
 
-        if contour_raw and len(contour_raw) >= 3:
+        # Support both single and multiple timber contours.
+        contours = self._normalize_contours(
+            contour_raw
+        )
+
+        for contour in contours:
 
             points_px = self._world_to_projector(
-                contour_raw,
+                contour,
                 thickness_mm,
             )
+
+            if (
+                len(points_px) < 3
+                or not np.isfinite(points_px).all()
+            ):
+                continue
 
             points_int = self._pixel_points(
                 points_px
