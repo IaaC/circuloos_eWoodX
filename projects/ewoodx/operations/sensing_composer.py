@@ -703,6 +703,397 @@ class EWoodXSensingComposer:
             },
         }
 
+    
+    # =========================================================
+    # LIVE PREVIEW HELPERS
+    # =========================================================
+
+    @staticmethod
+    def _draw_reference_overlay(
+        preview,
+        markers,
+        workspace_outer_px=None,
+        reprojection_error_mm=None,
+    ):
+        """Draw the reference markers and workspace boundary."""
+
+        if workspace_outer_px is not None:
+            points = np.round(
+                np.asarray(workspace_outer_px)
+            ).astype(np.int32).reshape(-1, 1, 2)
+
+            if len(points) >= 3:
+                cv2.polylines(
+                    preview, [points], True,
+                    (255, 0, 0), 2, cv2.LINE_AA,
+                )
+
+        for marker_id, corners in markers.items():
+            points = np.round(
+                np.asarray(corners)
+            ).astype(np.int32).reshape(-1, 2)
+
+            if len(points) != 4:
+                continue
+
+            cv2.polylines(
+                preview,
+                [points.reshape(-1, 1, 2)],
+                True,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+
+            center = np.mean(points, axis=0).astype(int)
+
+            cv2.putText(
+                preview,
+                str(marker_id),
+                tuple(center),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+
+        if reprojection_error_mm is not None:
+            error_text = (
+                f"Homography error: "
+                f"{reprojection_error_mm:.3f} mm"
+            )
+        elif workspace_outer_px is not None:
+            error_text = "Homography error: N/A"
+        else:
+            error_text = "Homography: unavailable"
+
+        cv2.putText(
+            preview,
+            error_text,
+            (30, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    @staticmethod
+    def _draw_rotated_text(
+        image,
+        text,
+        center,
+        angle_deg,
+        color=(0, 255, 0),
+        font_scale=0.65,
+        thickness=2,
+    ):
+        """
+        Draw text centered at a point and parallel to an edge.
+
+        OpenCV putText does not support rotation directly.
+        Render into a small transparent image and rotate it.
+        """
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # Keep labels upright.
+        angle_deg = (angle_deg + 180.0) % 360.0 - 180.0
+
+        if angle_deg > 90.0:
+            angle_deg -= 180.0
+        elif angle_deg < -90.0:
+            angle_deg += 180.0
+
+        (text_w, text_h), baseline = cv2.getTextSize(
+            text, font, font_scale, thickness,
+        )
+
+        padding = 12
+        patch_w = text_w + padding * 2
+        patch_h = text_h + baseline + padding * 2
+
+        patch = np.zeros(
+            (patch_h, patch_w, 4),
+            dtype=np.uint8,
+        )
+
+        cv2.putText(
+            patch,
+            text,
+            (padding, padding + text_h),
+            font,
+            font_scale,
+            (*color, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+
+        rotation = cv2.getRotationMatrix2D(
+            (patch_w / 2.0, patch_h / 2.0),
+            -angle_deg,
+            1.0,
+        )
+
+        cos_a = abs(rotation[0, 0])
+        sin_a = abs(rotation[0, 1])
+
+        rotated_w = int(
+            np.ceil(patch_h * sin_a + patch_w * cos_a)
+        )
+        rotated_h = int(
+            np.ceil(patch_h * cos_a + patch_w * sin_a)
+        )
+
+        rotation[0, 2] += rotated_w / 2.0 - patch_w / 2.0
+        rotation[1, 2] += rotated_h / 2.0 - patch_h / 2.0
+
+        rotated = cv2.warpAffine(
+            patch,
+            rotation,
+            (rotated_w, rotated_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0, 0),
+        )
+
+        x = int(round(center[0] - rotated_w / 2.0))
+        y = int(round(center[1] - rotated_h / 2.0))
+
+        image_h, image_w = image.shape[:2]
+
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(image_w, x + rotated_w)
+        y2 = min(image_h, y + rotated_h)
+
+        if x1 >= x2 or y1 >= y2:
+            return
+
+        source = rotated[
+            y1 - y:y2 - y,
+            x1 - x:x2 - x,
+        ]
+
+        target = image[y1:y2, x1:x2]
+
+        alpha = (
+            source[:, :, 3:4].astype(np.float32) / 255.0
+        )
+
+        target[:] = np.clip(
+            target.astype(np.float32) * (1.0 - alpha)
+            + source[:, :, :3].astype(np.float32) * alpha,
+            0,
+            255,
+        ).astype(np.uint8)
+
+    @classmethod
+    def _draw_timber_dimensions(
+        cls,
+        preview,
+        corners_px,
+        measurement,
+    ):
+        """
+        Draw oriented bounding box and dimensions.
+
+        Length follows the longer pair of box edges.
+        Width follows the shorter pair.
+        """
+
+        box = np.asarray(
+            corners_px,
+            dtype=np.float32,
+        ).reshape(4, 2)
+
+        cv2.polylines(
+            preview,
+            [np.round(box).astype(np.int32)],
+            True,
+            (0, 255, 0),
+            3,
+            cv2.LINE_AA,
+        )
+
+        edges = np.roll(box, -1, axis=0) - box
+        lengths_px = np.linalg.norm(edges, axis=1)
+
+        # Opposite edges represent the same dimension.
+        pair_0 = (lengths_px[0] + lengths_px[2]) / 2.0
+        pair_1 = (lengths_px[1] + lengths_px[3]) / 2.0
+
+        if pair_0 >= pair_1:
+            length_edge = 0
+            width_edge = 1
+        else:
+            length_edge = 1
+            width_edge = 0
+
+        box_center = box.mean(axis=0)
+
+        for edge_index, label, value in (
+            (
+                length_edge,
+                "L",
+                measurement["length_mm"],
+            ),
+            (
+                width_edge,
+                "W",
+                measurement["width_mm"],
+            ),
+        ):
+            start = box[edge_index]
+            end = box[(edge_index + 1) % 4]
+
+            direction = end - start
+            edge_length = float(np.linalg.norm(direction))
+
+            if edge_length < 1.0:
+                continue
+
+            direction /= edge_length
+
+            midpoint = (start + end) / 2.0
+
+            normal = np.array(
+                [-direction[1], direction[0]],
+                dtype=np.float32,
+            )
+
+            # Point away from the timber center.
+            if np.dot(normal, midpoint - box_center) < 0:
+                normal = -normal
+
+            text_center = midpoint + normal * 26.0
+
+            angle_deg = float(
+                np.degrees(
+                    np.arctan2(direction[1], direction[0])
+                )
+            )
+
+            cls._draw_rotated_text(
+                preview,
+                f"{label}: {value:.1f} mm",
+                text_center,
+                angle_deg,
+                color=(0, 255, 0),
+            )
+
+    def _build_preview(
+        self,
+        undistorted,
+        markers,
+        calibration,
+        detected_timbers,
+        measurements,
+        shape_groups,
+        thickness_mm,
+        thickness_source,
+    ):
+        """Build the annotated preview for either segmentation mode."""
+
+        preview = undistorted.copy()
+
+        errors = (
+            self.extrinsic_calibration.reprojection_errors_mm
+        )
+
+        max_error = (
+            float(np.max(errors))
+            if errors is not None and len(errors) > 0
+            else None
+        )
+
+        self._draw_reference_overlay(
+            preview,
+            markers,
+            workspace_outer_px=(
+                calibration["workspace_outer_px"]
+            ),
+            reprojection_error_mm=max_error,
+        )
+
+        for index, (timber, measurement) in enumerate(
+            zip(detected_timbers, measurements)
+        ):
+            cv2.drawContours(
+                preview,
+                [np.asarray(timber["contour"], dtype=np.int32)],
+                -1,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            for hole in timber.get("holes", []):
+                cv2.drawContours(
+                    preview,
+                    [np.asarray(hole, dtype=np.int32)],
+                    -1,
+                    (0, 0, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            self._draw_timber_dimensions(
+                preview,
+                timber["corners_px"],
+                measurement,
+            )
+
+            center = np.mean(
+                np.asarray(
+                    timber["corners_px"],
+                    dtype=np.float32,
+                ).reshape(-1, 2),
+                axis=0,
+            )
+
+            cv2.putText(
+                preview,
+                f"Timber {index + 1}",
+                tuple(np.round(center).astype(int)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+
+        if self.handdraw_detector is not None:
+            all_shapes = [
+                shape
+                for group in shape_groups
+                for shape in group
+            ]
+
+            draw_detections(preview, all_shapes)
+
+        footer = (
+            f"Mode: {self.segmentation_mode.upper()} | "
+            f"Timbers: {len(detected_timbers)} | "
+            f"Thickness: {thickness_mm:.1f} mm "
+            f"({thickness_source}) | "
+            "S=Save | T=Thickness | Q=Quit"
+        )
+
+        cv2.putText(
+            preview,
+            footer,
+            (30, preview.shape[0] - 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        return preview
+
     # =========================================================
     # FRAME PROCESSING
     # =========================================================
@@ -731,6 +1122,7 @@ class EWoodXSensingComposer:
                 frame,
                 undistorted,
                 "Reference markers not visible",
+                markers=markers,
             )
 
         workspace_outer_px = (
@@ -764,6 +1156,8 @@ class EWoodXSensingComposer:
                 frame,
                 undistorted,
                 "No valid timber detected",
+                markers=markers,
+                workspace_outer_px=workspace_outer_px,
             )
 
         if plate is not None:
@@ -874,66 +1268,20 @@ class EWoodXSensingComposer:
             "timbers": measurements,
         }
 
-        preview = undistorted.copy()
+        # -----------------------------------------------------
+        # Annotated live preview
+        # -----------------------------------------------------
 
-        for index, timber in enumerate(detected_timbers):
-
-            cv2.drawContours(
-                preview,
-                [
-                    np.asarray(
-                        timber["contour"],
-                        dtype=np.int32,
-                    )
-                ],
-                -1,
-                (0, 255, 0),
-                2,
-            )
-
-            for hole in timber.get("holes", []):
-                cv2.drawContours(
-                    preview,
-                    [
-                        np.asarray(
-                            hole,
-                            dtype=np.int32,
-                        )
-                    ],
-                    -1,
-                    (0, 0, 255),
-                    2,
-                )
-
-            center = np.mean(
-                np.asarray(
-                    timber["corners_px"]
-                ).reshape(-1, 2),
-                axis=0,
-            )
-
-            cv2.putText(
-                preview,
-                f"Timber {index + 1}",
-                tuple(center.astype(int)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 0),
-                2,
-            )
-
-        if self.handdraw_detector is not None:
-
-            all_shapes = [
-                shape
-                for group in shape_groups
-                for shape in group
-            ]
-
-            draw_detections(
-                preview,
-                all_shapes,
-            )
+        preview = self._build_preview(
+            undistorted=undistorted,
+            markers=markers,
+            calibration=calibration,
+            detected_timbers=detected_timbers,
+            measurements=measurements,
+            shape_groups=shape_groups,
+            thickness_mm=thickness_mm,
+            thickness_source=thickness_source,
+        )
 
         # Preserve the selected segmenter's mask.
         # In multi mode, construct a hole-aware mask
@@ -965,19 +1313,49 @@ class EWoodXSensingComposer:
             "measurement": capture_measurement,
         }
 
-    @staticmethod
-    def _invalid_result(frame, undistorted, reason):
-
+    def _invalid_result(
+        self,
+        frame,
+        undistorted,
+        reason,
+        markers=None,
+        workspace_outer_px=None,
+    ):
         preview = undistorted.copy()
+
+        self._draw_reference_overlay(
+            preview,
+            markers if markers is not None else {},
+            workspace_outer_px=workspace_outer_px,
+        )
 
         cv2.putText(
             preview,
             reason,
-            (40, 60),
+            (30, 85),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1.0,
+            0.9,
             (0, 0, 255),
             2,
+            cv2.LINE_AA,
+        )
+
+        footer = (
+            f"Mode: {self.segmentation_mode.upper()} | "
+            f"Thickness: {self.manual_thickness_mm:.1f} mm "
+            "(manual default) | "
+            "S=Save | T=Thickness | Q=Quit"
+        )
+
+        cv2.putText(
+            preview,
+            footer,
+            (30, preview.shape[0] - 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
         )
 
         return {
@@ -989,6 +1367,7 @@ class EWoodXSensingComposer:
             "mask": None,
             "measurement": None,
         }
+
 
     # =========================================================
     # ACTIVE CAPTURE
